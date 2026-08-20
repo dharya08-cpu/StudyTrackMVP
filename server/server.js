@@ -5,10 +5,10 @@ import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || "studytrack-dev-secret";
 
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || "http://localhost:5173" }));
+app.use(cors({ origin: process.env.CLIENT_ORIGIN || true }));
 app.use(express.json());
 
 const db = new Database("studytrack.db");

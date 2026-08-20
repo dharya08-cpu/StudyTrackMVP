@@ -1,3 +1,11 @@
+modules = ["nodejs-24", "python-3.11"]
 [nix]
 channel = "stable-25_05"
 packages = ["unzip"]
+
+[[ports]]
+localPort = 3001
+externalPort = 80
+
+[[ports]]
+localPort = 5000
