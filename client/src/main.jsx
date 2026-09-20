@@ -1,276 +1,45 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { createRoot } from "react-dom/client";
+import React,{useEffect,useMemo,useState} from "react";
+import {createRoot} from "react-dom/client";
 import "./styles.css";
-
-const API = import.meta.env.VITE_API_URL || "/api";
-
-async function api(path, options={}) {
-  const token = localStorage.getItem("studytrack_token");
-  const res = await fetch(API + path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {})
-    }
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Request failed");
-  return data;
+const API=import.meta.env.VITE_API_URL||"/api";
+function localDateInput(){const parts=new Intl.DateTimeFormat("en-CA",{year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date());const m=Object.fromEntries(parts.filter(p=>p.type!=="literal").map(p=>[p.type,p.value]));return `${m.year}-${m.month}-${m.day}`}
+async function api(path,options={}){const token=localStorage.getItem("studytrack_token");const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),20000);let res;try{res=await fetch(API+path,{...options,signal:controller.signal,headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{}) ,...(options.headers||{})}});}catch(e){if(e.name==="AbortError")throw new Error("Request timed out. Please try again.");throw e}finally{clearTimeout(timeout)}const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||"Request failed");return data}
+function App(){const [user,setUser]=useState(null),[role,setRole]=useState("student"),[mode,setMode]=useState("login");useEffect(()=>{const t=localStorage.getItem("studytrack_token");if(t)api("/me").then(x=>setUser(x.user)).catch(()=>localStorage.removeItem("studytrack_token"))},[]);if(!user)return <Auth role={role} setRole={setRole} mode={mode} setMode={setMode} onLogin={setUser}/>;return user.role==="teacher"?<TeacherApp user={user} logout={()=>{localStorage.clear();setUser(null)}}/>:<StudentApp user={user} logout={()=>{localStorage.clear();setUser(null)}}/>}
+function Auth({role,setRole,mode,setMode,onLogin}){const [form,setForm]=useState({name:"",email:"",password:"",classCode:""}),[error,setError]=useState("");const submit=async e=>{e.preventDefault();setError("");try{const path=mode==="register"?"/auth/register":"/auth/login";const body=mode==="register"?form:{email:form.email,password:form.password,role};const d=await api(path,{method:"POST",body:JSON.stringify(body)});localStorage.setItem("studytrack_token",d.token);onLogin(d.user)}catch(e){setError(e.message)}};return <main className="auth"><div className="auth-card"><div className="brand">Study<span>Track</span></div><p className="muted">Coaching + self-study progress companion.</p><div className="role-switch"><button className={role==="student"?"active":""} onClick={()=>{setRole("student");setMode("login")}}>Student</button><button className={role==="teacher"?"active":""} onClick={()=>{setRole("teacher");setMode("login")}}>Teacher</button></div><h1>{mode==="login"?`Login as ${role}`:"Student registration"}</h1><form onSubmit={submit}>{mode==="register"&&<input placeholder="Full name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required/>}<input type="email" placeholder="Email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} required/><input type="password" placeholder="Password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} required/>{mode==="register"&&<input placeholder="Class code" value={form.classCode} onChange={e=>setForm({...form,classCode:e.target.value})} required/>}{error&&<div className="error">{error}</div>}<button className="primary">{mode==="login"?"Login":"Create student account"}</button></form>{role==="student"&&<button className="link" onClick={()=>setMode(mode==="login"?"register":"login")}>{mode==="login"?"New student? Register with class code":"Already have an account? Login"}</button>}</div></main>}
+function Layout({user,title,children,logout,nav=[],tab,setTab}){return <div className="app"><header><div className="brand small">Study<span>Track</span></div><div className="userbar"><span className="pill">{user.role}</span><span className="hide-mobile">{user.name}</span><button onClick={logout}>Logout</button></div></header><main className="container"><div className="page-title"><h1>{title}</h1><p className="muted">{user.role==="teacher"?"Monitor your class and act on useful signals.":"Understand your study, tests and progress."}</p></div>{nav.length>0&&<div className="tabs">{nav.map(n=><button key={n} className={tab===n?"tab active":"tab"} onClick={()=>setTab(n)}>{n}</button>)}</div>}{children}</main></div>}
+function Stat({label,value,sub}){return <div className="stat"><span>{label}</span><strong>{value}</strong>{sub&&<small>{sub}</small>}</div>}
+function Card({title,meta,body,children}){return <div className="card"><b>{title}</b>{meta&&<small>{meta}</small>}{body&&<p>{body}</p>}{children}</div>}
+function List({items,render,empty="Nothing here yet."}){return items?.length?<div className="list">{items.map((x,i)=><React.Fragment key={x.id||i}>{render(x,i)}</React.Fragment>)}</div>:<div className="empty">{empty}</div>}
+function ErrorBox({error}){return error?<div className="error">{error}</div>:null}
+function Loading(){return <div className="loading">Loading StudyTrack…</div>}
+function MiniBars({items,labelKey="subject",valueKey="minutes"}){const max=Math.max(...items.map(x=>Number(x[valueKey]||0)),1);return <div className="bars">{items.map((x,i)=><div className="bar-row" key={i}><span>{x[labelKey]}</span><div><i style={{width:`${Math.max(3,Number(x[valueKey]||0)/max*100)}%`}}/></div><b>{Math.round(Number(x[valueKey]||0)/60*10)/10}h</b></div>)}</div>}
+function Trend({value}){return <span className={`trend ${value}`}>{value==="improving"?"↗ Improving":value==="declining"?"↘ Declining":value==="new"?"↗ New activity":"→ Stable"}</span>}
+function TeacherApp({user,logout}){const [tab,setTab]=useState("overview"),[data,setData]=useState(null),[selected,setSelected]=useState(null),[error,setError]=useState("");const load=()=>api("/teacher/overview").then(setData).catch(e=>setError(e.message));useEffect(load,[]);if(!data)return error?<><Layout user={user} title="Teacher dashboard" logout={logout}/><div className="container"><ErrorBox error={error}/></div></>:<Loading/>;return <Layout user={user} title="Teacher dashboard" logout={logout} nav={["overview","study activity","homework","tests","results","attendance","syllabus","students"]} tab={tab} setTab={setTab}>{tab==="overview"&&<TeacherOverview data={data} setTab={setTab} setSelected={setSelected}/>} {tab==="study activity"&&<TeacherStudyActivity data={data} selected={selected} setSelected={setSelected}/>} {tab==="homework"&&<TeacherHomework data={data}/>} {tab==="tests"&&<TeacherTests data={data} reload={load}/>} {tab==="results"&&<TeacherResults data={data}/>} {tab==="attendance"&&<TeacherAttendance/>} {tab==="syllabus"&&<TeacherSyllabus/>} {tab==="students"&&<TeacherStudents data={data} selected={selected} setSelected={setSelected}/>}</Layout>}
+function TeacherOverview({data,setTab,setSelected}){
+ const avg=(()=>{const rows=data.studentSummary.filter(s=>Number(s.average_percentage)>0);return rows.length?(rows.reduce((a,s)=>a+Number(s.average_percentage),0)/rows.length).toFixed(1):"0.0"})();
+ return <><div className="grid four"><Stat label="Students" value={data.metrics.students||0}/><Stat label="Active today" value={data.metrics.active_today||0} sub={`${data.metrics.inactive_today||0} inactive`}/><Stat label="Study today" value={`${data.metrics.today_hours||0}h`}/><Stat label="Study this week" value={`${data.metrics.week_hours||0}h`}/></div><div className="grid four"><Stat label="Average test" value={`${avg}%`}/><Stat label="Homework" value={data.homework.length}/><Stat label="Pending reviews" value={data.metrics.pending_reviews||0}/><Stat label="Open homework" value={data.metrics.open_homework||0}/></div><section className="panel"><div className="panel-head"><div><h2>Quick student status</h2><p className="muted">Study activity, performance and homework in one view.</p></div><button className="secondary" onClick={()=>setTab("students")}>View all</button></div><div className="table-wrap"><table><thead><tr><th>Student</th><th>Today</th><th>This week</th><th>Test avg</th><th>Homework</th><th>Status</th></tr></thead><tbody>{data.studentSummary.map(s=><tr key={s.id} onClick={()=>{setSelected(s.id);setTab("students")}}><td><b>{s.name}</b><small>{s.email}</small></td><td>{s.today_hours}h</td><td>{s.week_hours}h</td><td>{s.average_percentage}%</td><td>{s.homework_submitted}/{s.homework_total}</td><td><span className={`status-chip ${s.status}`}>{s.status==="on-track"?"On track":s.status==="needs-attention"?"Needs attention":"At risk"}</span><br/><Trend value={s.study_trend}/></td></tr>)}</tbody></table></div></section><section className="panel"><div className="panel-head"><h2>Recent activity</h2><button className="secondary" onClick={()=>setTab("study activity")}>Study activity</button></div><ActivityList items={data.activity}/></section></>
 }
 
-function App() {
-  const [user, setUser] = useState(null);
-  const [role, setRole] = useState("student");
-  const [mode, setMode] = useState("login");
+function ActivityList({items}){return <List items={items} empty="No recent activity." render={x=><div className="activity"><div className={`activity-dot ${x.type}`}/><div><b>{x.student}</b> <span>{x.type==="study"?`logged ${x.detail} minutes of ${x.title}`:x.type==="homework"?`${x.detail} homework: ${x.title}`:x.type==="test"?`recorded ${x.detail}% in ${x.title}`:x.type==="attendance"?`was marked ${x.detail}`:`${x.title} syllabus: ${x.detail}`}</span><small>{x.created_at}</small></div></div>}/>}
 
-  useEffect(() => {
-    const token = localStorage.getItem("studytrack_token");
-    if (token) api("/me").then(x => setUser(x.user)).catch(() => localStorage.removeItem("studytrack_token"));
-  }, []);
+function TeacherStudyActivity({data,selected,setSelected}){const [student,setStudent]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(""),[filters,setFilters]=useState({from:"",to:"",subject:"",category:""});const load=async id=>{setSelected(id);setLoading(true);setError("");try{const q=new URLSearchParams(Object.entries(filters).filter(([,v])=>v));setStudent(await api(`/teacher/student/${id}/study${q.toString()?`?${q}`:""}`))}catch(e){setError(e.message)}finally{setLoading(false)}};useEffect(()=>{if(selected)load(selected)},[filters]);return <><div className="panel"><div className="panel-head"><div><h2>Study activity</h2><p className="muted">Daily, weekly, subject and study-type breakdowns.</p></div></div><div className="student-pills">{data.students.map(s=><button className={selected===s.id?"active":""} onClick={()=>load(s.id)} key={s.id}>{s.name}</button>)}</div><div className="form-grid filter-grid"><input type="date" value={filters.from} onChange={e=>setFilters({...filters,from:e.target.value})}/><input type="date" value={filters.to} onChange={e=>setFilters({...filters,to:e.target.value})}/><input placeholder="Exact subject filter" value={filters.subject} onChange={e=>setFilters({...filters,subject:e.target.value})}/><select value={filters.category} onChange={e=>setFilters({...filters,category:e.target.value})}><option value="">All study types</option><option value="self-study">Self-study</option><option value="tuition">Tuition</option><option value="outside">Outside</option></select></div><button className="secondary" onClick={()=>setFilters({from:"",to:"",subject:"",category:""})}>Clear filters</button></div>{error&&<ErrorBox error={error}/>} {loading&&<Loading/>}{student&&<section className="panel"><h2>{student.student.name}</h2><div className="grid four"><Stat label="This week" value={`${minutesToHours(student.this_week_minutes)}h`}/><Stat label="Previous week" value={`${minutesToHours(student.previous_week_minutes)}h`}/><Stat label="Change" value={student.change_percentage==null?"New":`${student.change_percentage>0?"+":""}${student.change_percentage}%`}/><Stat label="Filtered logs" value={student.logs.length}/></div><p><Trend value={student.trend}/></p><div className="dashboard-grid"><div><h3>Subject-wise</h3><MiniBars items={student.subjects}/></div><div><h3>Study type</h3><MiniBars items={student.categories} labelKey="category"/></div></div><div className="panel inner"><h3>Daily activity</h3><MiniBars items={student.daily} labelKey="study_date"/></div><div className="panel inner"><h3>Recent study logs</h3><List items={student.logs.slice(0,20)} render={x=><div className="item"><div><b>{x.subject}</b><small>{x.study_date} • {x.category}</small></div><strong>{x.minutes} min</strong></div>}/></div></section>}</>}
+function StudentAnalytics({id}){const [a,setA]=useState(null),[error,setError]=useState("");useEffect(()=>{setA(null);setError("");api(`/teacher/student/${id}/analytics`).then(setA).catch(e=>setError(e.message))},[id]);if(error)return <ErrorBox error={error}/>;if(!a)return <Loading/>;return <div className="analytics"><h2>{a.student.name}</h2><div className="grid four"><Stat label="Test average" value={`${a.averagePercentage}%`}/><Stat label="Latest test" value={a.latestPercentage==null?"—":`${a.latestPercentage}%`}/><Stat label="Study this week" value={`${a.weekStudyHours}h`} sub={<Trend value={a.studyTrend}/>}/><Stat label="Attendance" value={`${a.attendancePercentage}%`}/></div><div className="grid three"><Stat label="Syllabus" value={`${a.syllabusPercentage}%`}/><Stat label="Study total" value={`${a.studyHours}h`}/><Stat label="Performance" value={<Trend value={a.performanceTrend}/>}/></div><section className="panel inner"><div className="panel-head"><div><h3>Study time + test performance</h3><p className="muted">Weekly history shown together; this does not imply causation.</p></div></div><div className="table-wrap"><table><thead><tr><th>Week</th><th>Study</th><th>Test %</th></tr></thead><tbody>{a.weeklyComparison.length?a.weeklyComparison.map(w=><tr key={w.week_start}><td>{w.week_start}</td><td>{minutesToHours(w.study_minutes)}h</td><td>{w.test_percentage==null?"—":`${w.test_percentage}%`}</td></tr>):<tr><td colSpan="3">No combined history yet.</td></tr>}</tbody></table></div></section><div className="panel inner"><h3>Test history</h3><List items={[...a.scores].reverse()} empty="No test results yet." render={s=><div className="score-row"><span><b>{s.title}</b><small>{s.subject} • {s.test_date||"No date"}</small></span><b>{s.marks}/{s.max_marks}</b><strong>{s.percentage}%</strong></div>}/></div></div>}
 
-  if (!user) {
-    return <Auth role={role} setRole={setRole} mode={mode} setMode={setMode} onLogin={setUser} />;
-  }
+function TeacherStudents({data,selected,setSelected}){return <section className="panel"><h2>Students</h2><div className="student-grid">{data.students.map(s=><button className="student-card" key={s.id} onClick={()=>setSelected(s.id)}><b>{s.name}</b><small>{s.email}</small><div className="student-mini">{data.studentSummary.find(x=>x.id===s.id)?.week_hours||0}h this week</div></button>)}</div>{selected&&<StudentAnalytics id={selected}/>}</section>}
+function TeacherHomework({data}){const [selected,setSelected]=useState(null),[subs,setSubs]=useState(null),[review,setReview]=useState(null),[feedback,setFeedback]=useState(""),[msg,setMsg]=useState(""),[error,setError]=useState(""),[loading,setLoading]=useState(false);const open=async id=>{setSelected(id);setError("");setLoading(true);try{setSubs(await api(`/teacher/homework/${id}/submissions`))}catch(e){setError(e.message)}finally{setLoading(false)}};const doReview=async()=>{if(!review)return;setError("");try{await api(`/teacher/homework/${selected}/review`,{method:"POST",body:JSON.stringify({studentId:review.student.id,feedback})});setMsg("Submission reviewed successfully.");setReview(null);setFeedback("");await open(selected)}catch(e){setError(e.message)}};return <><section className="panel"><div className="panel-head"><div><h2>Homework</h2><p className="muted">Track class submissions and review individual students.</p></div>{msg&&<span className="success">{msg}</span>}</div>{error&&<ErrorBox error={error}/>}<List items={data.homework} render={h=><div className="item clickable" onClick={()=>open(h.id)}><div><b>{h.title}</b><small>Due: {h.due_date||"No date"}</small></div><div className="status-group"><span>{h.submitted_count||0}/{data.students.length} submitted</span><span>{h.reviewed_count||0} reviewed</span><span>{h.late_count||0} late</span></div></div>}/></section>{loading&&<Loading/>}{subs&&<section className="panel"><div className="panel-head"><div><h2>{subs.homework.title} — submissions</h2><p className="muted">Every student is listed so pending work is visible too.</p></div></div><List items={subs.submissions} render={s=><div className="item"><div><b>{s.student.name}</b><small>{s.submitted_at?`Submitted ${s.submitted_at}`:"Not submitted"}</small>{s.note&&<small>Note: {s.note}</small>}{s.feedback&&<small>Feedback: {s.feedback}</small>}</div><div className="status-group"><span className={`badge ${s.status}`}>{s.status}</span>{s.status!=="pending"&&s.status!=="reviewed"&&<button className="secondary" onClick={e=>{e.stopPropagation();setReview(s);setFeedback(s.feedback||"")}}>Review</button>}</div></div>}/></section>}{review&&<div className="modal-backdrop" onClick={()=>setReview(null)}><div className="modal" onClick={e=>e.stopPropagation()}><div className="panel-head"><div><h3>Review {review.student.name}</h3><p className="muted">{subs?.homework.title}</p></div><button className="secondary" onClick={()=>setReview(null)}>Close</button></div><textarea placeholder="Feedback (optional)" value={feedback} onChange={e=>setFeedback(e.target.value)}/><button className="primary" onClick={doReview}>Mark reviewed</button></div></div>}</>}
 
-  return user.role === "teacher"
-    ? <TeacherApp user={user} logout={() => { localStorage.clear(); setUser(null); }} />
-    : <StudentApp user={user} logout={() => { localStorage.clear(); setUser(null); }} />;
-}
+function TeacherTests({data,reload}){const [test,setTest]=useState({title:"",subject:"",maxMarks:"",solution:"",testDate:""}),[mark,setMark]=useState({testId:"",studentId:"",marks:"",remark:""}),[msg,setMsg]=useState(""),[error,setError]=useState("");const addTest=async e=>{e.preventDefault();setError("");try{await api("/teacher/tests",{method:"POST",body:JSON.stringify(test)});setTest({title:"",subject:"",maxMarks:"",solution:"",testDate:""});setMsg("Test published.");reload()}catch(e){setError(e.message)}};const addMark=async e=>{e.preventDefault();setError("");try{const r=await api("/teacher/marks",{method:"POST",body:JSON.stringify(mark)});setMsg(`Saved result: ${r.percentage}%.`);setMark({testId:"",studentId:"",marks:"",remark:""});reload()}catch(e){setError(e.message)}};return <><section className="panel"><div className="panel-head"><div><h2>Create test</h2><p className="muted">Percentages are calculated automatically from marks.</p></div></div>{error&&<ErrorBox error={error}/>} {msg&&<p className="success">{msg}</p>}<form className="form-grid" onSubmit={addTest}><input placeholder="Test title" value={test.title} onChange={e=>setTest({...test,title:e.target.value})} required/><input placeholder="Subject" value={test.subject} onChange={e=>setTest({...test,subject:e.target.value})} required/><input type="number" min="1" placeholder="Max marks" value={test.maxMarks} onChange={e=>setTest({...test,maxMarks:e.target.value})} required/><input type="date" value={test.testDate} onChange={e=>setTest({...test,testDate:e.target.value})}/><textarea placeholder="Solution / analysis" value={test.solution} onChange={e=>setTest({...test,solution:e.target.value})}/><button className="primary">Publish test</button></form></section><section className="panel"><h2>Enter marks</h2><form className="form-grid" onSubmit={addMark}><select value={mark.testId} onChange={e=>setMark({...mark,testId:e.target.value})} required><option value="">Select test</option>{data.tests.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select><select value={mark.studentId} onChange={e=>setMark({...mark,studentId:e.target.value})} required><option value="">Select student</option>{data.students.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select><input type="number" min="0" max={data.tests.find(t=>String(t.id)===String(mark.testId))?.max_marks||undefined} placeholder="Marks" value={mark.marks} onChange={e=>setMark({...mark,marks:e.target.value})} required/><input placeholder="Remark" value={mark.remark} onChange={e=>setMark({...mark,remark:e.target.value})}/><button className="primary">Save marks</button></form></section><section className="panel"><h2>Test history</h2><List items={data.tests} render={t=><div className="item"><div><b>{t.title}</b><small>{t.subject} • {t.max_marks} marks • {t.test_date||"No date"}</small></div><div><strong>{t.average_percentage==null?"—":`${t.average_percentage}%`}</strong><small>{t.result_count||0} results</small></div></div>}/></section></>}
 
-function Auth({ role, setRole, mode, setMode, onLogin }) {
-  const [form, setForm] = useState({ name:"", email:"", password:"", classCode:"" });
-  const [error, setError] = useState("");
-  const submit = async e => {
-    e.preventDefault(); setError("");
-    try {
-      const path = mode === "register" ? "/auth/register" : "/auth/login";
-      const body = mode === "register"
-        ? form
-        : { email:form.email, password:form.password, role };
-      const data = await api(path, { method:"POST", body:JSON.stringify(body) });
-      localStorage.setItem("studytrack_token", data.token);
-      onLogin(data.user);
-    } catch (e) { setError(e.message); }
-  };
+function TeacherResults({data}){const [results,setResults]=useState(null),[student,setStudent]=useState(null),[error,setError]=useState(""),[filters,setFilters]=useState({subject:"",from:"",to:""});const load=async()=>{setError("");try{const q=new URLSearchParams(Object.entries(filters).filter(([,v])=>v));setResults(await api(`/teacher/results${q.toString()?`?${q}`:""}`))}catch(e){setError(e.message)}};useEffect(()=>{load()},[filters]);if(error&&!results)return <section className="panel"><ErrorBox error={error}/><button className="secondary" onClick={load}>Try again</button></section>;if(!results)return <Loading/>;return <><section className="panel"><div className="panel-head"><div><h2>Student results</h2><p className="muted">Class-wide performance with individual score history.</p></div></div><div className="form-grid filter-grid"><input placeholder="Exact subject filter" value={filters.subject} onChange={e=>setFilters({...filters,subject:e.target.value})}/><input type="date" value={filters.from} onChange={e=>setFilters({...filters,from:e.target.value})}/><input type="date" value={filters.to} onChange={e=>setFilters({...filters,to:e.target.value})}/><button className="secondary" onClick={()=>setFilters({subject:"",from:"",to:""})}>Clear filters</button></div><div className="table-wrap"><table><thead><tr><th>Student</th><th>Tests</th><th>Average</th><th>Latest</th><th>Highest</th><th>Trend</th></tr></thead><tbody>{results.students.map(r=><tr key={r.student.id} onClick={()=>setStudent(r)}><td><b>{r.student.name}</b><small>{r.student.email}</small></td><td>{r.test_count}</td><td>{r.average_percentage}%</td><td>{r.latest_percentage==null?"—":`${r.latest_percentage}%`}</td><td>{r.highest_percentage==null?"—":`${r.highest_percentage}%`}</td><td><Trend value={r.trend}/></td></tr>)}</tbody></table></div></section>{student&&<section className="panel"><div className="panel-head"><div><h2>{student.student.name}</h2><p className="muted">Average {student.average_percentage}% • Lowest {student.lowest_percentage==null?"—":`${student.lowest_percentage}%`}</p></div><button className="secondary" onClick={()=>setStudent(null)}>Close</button></div><List items={student.scores} empty="No results yet." render={s=><div className="score-row"><span><b>{s.title}</b><small>{s.subject} • {s.test_date||"No date"}</small></span><b>{s.marks}/{s.max_marks}</b><strong>{s.percentage}%</strong></div>}/></section>}</>}
+function TeacherAttendance(){const [date,setDate]=useState(localDateInput()),[data,setData]=useState(null),[records,setRecords]=useState({}),[msg,setMsg]=useState(""),[error,setError]=useState("");const load=()=>{setError("");api(`/teacher/attendance?date=${date}`).then(d=>{setData(d);setRecords(Object.fromEntries(d.students.filter(x=>x.status).map(x=>[x.student.id,x.status]))) }).catch(e=>setError(e.message))};useEffect(load,[date]);if(error)return <section className="panel"><ErrorBox error={error}/><button className="secondary" onClick={load}>Try again</button></section>;if(!data)return <Loading/>;const save=async()=>{setError("");try{await api("/teacher/attendance",{method:"POST",body:JSON.stringify({date,records:Object.entries(records).map(([studentId,status])=>({studentId:Number(studentId),status}))})});setMsg("Attendance saved.");load()}catch(e){setError(e.message)}};return <section className="panel"><div className="panel-head"><div><h2>Attendance register</h2><p className="muted">Mark daily attendance. A blank record is different from an absence.</p></div><input className="date-input" type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>{data.students.length===0?<div className="empty">No students are currently enrolled in this class.</div>:<List items={data.students} render={x=><div className="item"><b>{x.student.name}</b><div className="attendance-toggle"><button className={records[x.student.id]==="present"?"active":""} onClick={()=>setRecords({...records,[x.student.id]:"present"})}>Present</button><button className={records[x.student.id]==="absent"?"danger active":"danger"} onClick={()=>setRecords({...records,[x.student.id]:"absent"})}>Absent</button></div></div>}/>}<button className="primary" onClick={save} disabled={!data.students.length}>Save attendance</button>{msg&&<p className="success">{msg}</p>}{error&&<ErrorBox error={error}/>}</section>}
 
-  return <main className="auth">
-    <div className="auth-card">
-      <div className="brand">Study<span>Track</span></div>
-      <p className="muted">Your coaching + self-study progress companion.</p>
-
-      <div className="role-switch">
-        <button className={role==="student" ? "active":""} onClick={()=>{setRole("student");setMode("login")}}>Student</button>
-        <button className={role==="teacher" ? "active":""} onClick={()=>{setRole("teacher");setMode("login")}}>Teacher</button>
-      </div>
-
-      <h1>{mode==="login" ? `Login as ${role}` : "Student registration"}</h1>
-
-      <form onSubmit={submit}>
-        {mode==="register" && <input placeholder="Full name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} />}
-        <input type="email" placeholder="Email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} required />
-        <input type="password" placeholder="Password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} required />
-        {mode==="register" && <input placeholder="Class code (e.g. DEMO01)" value={form.classCode} onChange={e=>setForm({...form,classCode:e.target.value})} required />}
-        {error && <div className="error">{error}</div>}
-        <button className="primary" type="submit">{mode==="login" ? "Login" : "Create student account"}</button>
-      </form>
-
-      {role==="student" && <button className="link" onClick={()=>setMode(mode==="login"?"register":"login")}>
-        {mode==="login" ? "New student? Register with class code" : "Already have an account? Login"}
-      </button>}
-
-      <div className="demo">
-        <b>Demo</b><br/>
-        Teacher: teacher@coaching.com / teacher123<br/>
-        Student: student@coaching.com / student123
-      </div>
-    </div>
-  </main>;
-}
-
-function Layout({ user, title, children, logout }) {
-  return <div className="app">
-    <header>
-      <div className="brand small">Study<span>Track</span></div>
-      <div className="userbar"><span>{user.name}</span><span className="pill">{user.role}</span><button onClick={logout}>Logout</button></div>
-    </header>
-    <main className="container">
-      <div className="page-title"><h1>{title}</h1><p className="muted">Track progress. Stay accountable. Improve.</p></div>
-      {children}
-    </main>
-  </div>;
-}
-
-function TeacherApp({user,logout}) {
-  const [data,setData] = useState(null);
-  const [selected,setSelected] = useState(null);
-  const [tab,setTab] = useState("overview");
-  const [home,setHome] = useState({title:"",description:"",dueDate:""});
-  const [test,setTest] = useState({title:"",subject:"",maxMarks:"",solution:"",testDate:""});
-  const [mark,setMark] = useState({testId:"",studentId:"",marks:"",remark:""});
-  const load=()=>api("/teacher/overview").then(setData).catch(e=>alert(e.message));
-  useEffect(load,[]);
-
-  if (!data) return <div className="loading">Loading StudyTrack…</div>;
-
-  const addHomework=async e=>{
-    e.preventDefault();
-    await api("/teacher/homework",{method:"POST",body:JSON.stringify(home)});
-    setHome({title:"",description:"",dueDate:""}); load();
-  };
-  const addTest=async e=>{
-    e.preventDefault();
-    await api("/teacher/tests",{method:"POST",body:JSON.stringify(test)});
-    setTest({title:"",subject:"",maxMarks:"",solution:"",testDate:""}); load();
-  };
-  const addMark=async e=>{
-    e.preventDefault();
-    await api("/teacher/marks",{method:"POST",body:JSON.stringify(mark)});
-    setMark({testId:"",studentId:"",marks:"",remark:""}); alert("Marks saved");
-  };
-
-  return <Layout user={user} title="Teacher dashboard" logout={logout}>
-    <div className="tabs">
-      {["overview","homework","tests","students"].map(x=><button className={tab===x?"tab active":"tab"} onClick={()=>setTab(x)} key={x}>{x}</button>)}
-    </div>
-
-    {tab==="overview" && <div className="grid four">
-      <Stat label="Students" value={data.students.length}/>
-      <Stat label="Homework" value={data.homework.length}/>
-      <Stat label="Tests" value={data.tests.length}/>
-      <Stat label="Class code" value={data.class?.code || "—"}/>
-    </div>}
-
-    {tab==="homework" && <section className="panel">
-      <h2>Create homework</h2>
-      <form className="form-grid" onSubmit={addHomework}>
-        <input placeholder="Title" value={home.title} onChange={e=>setHome({...home,title:e.target.value})} required/>
-        <input type="date" value={home.dueDate} onChange={e=>setHome({...home,dueDate:e.target.value})}/>
-        <textarea placeholder="Description / instructions" value={home.description} onChange={e=>setHome({...home,description:e.target.value})}/>
-        <button className="primary">Publish homework</button>
-      </form>
-      <h2>Published</h2>
-      <List items={data.homework} render={h=><Card title={h.title} meta={`Due: ${h.due_date||"No date"}`} body={h.description}/>}/>
-    </section>}
-
-    {tab==="tests" && <section className="panel">
-      <h2>Create test</h2>
-      <form className="form-grid" onSubmit={addTest}>
-        <input placeholder="Test title" value={test.title} onChange={e=>setTest({...test,title:e.target.value})} required/>
-        <input placeholder="Subject" value={test.subject} onChange={e=>setTest({...test,subject:e.target.value})} required/>
-        <input type="number" placeholder="Max marks" value={test.maxMarks} onChange={e=>setTest({...test,maxMarks:e.target.value})} required/>
-        <input type="date" value={test.testDate} onChange={e=>setTest({...test,testDate:e.target.value})}/>
-        <textarea placeholder="Solution / analysis" value={test.solution} onChange={e=>setTest({...test,solution:e.target.value})}/>
-        <button className="primary">Publish test</button>
-      </form>
-      <h2>Enter marks</h2>
-      <form className="form-grid" onSubmit={addMark}>
-        <select value={mark.testId} onChange={e=>setMark({...mark,testId:e.target.value})} required>
-          <option value="">Select test</option>{data.tests.map(t=><option value={t.id} key={t.id}>{t.title}</option>)}
-        </select>
-        <select value={mark.studentId} onChange={e=>setMark({...mark,studentId:e.target.value})} required>
-          <option value="">Select student</option>{data.students.map(s=><option value={s.id} key={s.id}>{s.name}</option>)}
-        </select>
-        <input type="number" placeholder="Marks" value={mark.marks} onChange={e=>setMark({...mark,marks:e.target.value})} required/>
-        <input placeholder="Remark" value={mark.remark} onChange={e=>setMark({...mark,remark:e.target.value})}/>
-        <button className="primary">Save marks</button>
-      </form>
-      <List items={data.tests} render={t=><Card title={t.title} meta={`${t.subject} • ${t.max_marks} marks • ${t.test_date||"No date"}`} body={t.solution||"No solution published yet."}/>}/>
-    </section>}
-
-    {tab==="students" && <section className="panel">
-      <h2>Students</h2>
-      <div className="student-grid">{data.students.map(s=><button className="student-card" key={s.id} onClick={()=>setSelected(s.id)}>{s.name}<small>{s.email}</small></button>)}</div>
-      {selected && <StudentAnalytics id={selected}/>}
-    </section>}
-  </Layout>
-}
-
-function StudentAnalytics({id}) {
-  const [a,setA]=useState(null);
-  useEffect(()=>api(`/teacher/student/${id}/analytics`).then(setA),[id]);
-  if(!a) return <p>Loading analytics…</p>;
-  return <div className="analytics">
-    <h3>{a.student.name}</h3>
-    <div className="grid three">
-      <Stat label="Average" value={`${a.averagePercentage}%`}/>
-      <Stat label="Improvement" value={`${a.improvementPercentage >= 0 ? "+" : ""}${a.improvementPercentage}%`}/>
-      <Stat label="Score records" value={a.scores.length}/>
-    </div>
-    <h4>Score trend</h4>
-    {a.scores.length===0 ? <p className="muted">No marks yet.</p> : a.scores.map((s,i)=><div className="score-row" key={i}><span>{s.title}</span><b>{s.marks}/{s.max_marks}</b><span>{s.remark}</span></div>)}
-  </div>
-}
-
-function StudentApp({user,logout}) {
-  const [data,setData]=useState(null);
-  const [log,setLog]=useState({category:"self-study",subject:"",minutes:"",studyDate:new Date().toISOString().slice(0,10),note:""});
-  const [note,setNote]=useState({});
-  const load=()=>api("/student/dashboard").then(setData);
-  useEffect(load,[]);
-
-  if(!data) return <div className="loading">Loading StudyTrack…</div>;
-
-  const total=Math.round((data.stats.total_study_minutes||0)/60*10)/10;
-  const submit=async(id)=>{
-    await api(`/student/homework/${id}/submit`,{method:"POST",body:JSON.stringify({note:note[id]||""})});
-    load();
-  };
-  const addLog=async e=>{
-    e.preventDefault();
-    await api("/student/study-log",{method:"POST",body:JSON.stringify(log)});
-    setLog({...log,subject:"",minutes:"",note:""}); load();
-  };
-
-  return <Layout user={user} title={`Welcome back, ${user.name.split(" ")[0]}`} logout={logout}>
-    <div className="grid four">
-      <Stat label="Average score" value={`${Number(data.stats.average_percentage||0).toFixed(1)}%`}/>
-      <Stat label="Tests" value={data.stats.tests_taken||0}/>
-      <Stat label="Study hours" value={total}/>
-      <Stat label="Class code" value={user.class_code||"—"}/>
-    </div>
-
-    <div className="dashboard-grid">
-      <section className="panel">
-        <h2>Homework</h2>
-        <List items={data.homework} render={h=><div className="item">
-          <div><b>{h.title}</b><p>{h.description}</p><small>Due: {h.due_date||"No date"}</small></div>
-          <div className="submit-box">
-            <input placeholder="Submission note" value={note[h.id]||h.submission_note||""} onChange={e=>setNote({...note,[h.id]:e.target.value})}/>
-            <button className="primary small-btn" onClick={()=>submit(h.id)}>{h.submitted_at?"Update":"Submit"}</button>
-          </div>
-        </div>}/>
-      </section>
-
-      <section className="panel">
-        <h2>Tests & solutions</h2>
-        <List items={data.tests} render={t=><Card title={t.title} meta={`${t.subject} • ${t.marks ?? "—"}/${t.max_marks}`} body={t.remark ? `${t.remark} | Solution: ${t.solution||"Not published"}` : `Solution: ${t.solution||"Not published"}`}/>}/>
-      </section>
-    </div>
-
-    <section className="panel">
-      <h2>Log study time</h2>
-      <form className="form-grid four-cols" onSubmit={addLog}>
-        <select value={log.category} onChange={e=>setLog({...log,category:e.target.value})}>
-          <option value="self-study">Self-study</option><option value="tuition">Tuition</option><option value="outside">Outside</option>
-        </select>
-        <input placeholder="Subject" value={log.subject} onChange={e=>setLog({...log,subject:e.target.value})} required/>
-        <input type="number" min="1" placeholder="Minutes" value={log.minutes} onChange={e=>setLog({...log,minutes:e.target.value})} required/>
-        <input type="date" value={log.studyDate} onChange={e=>setLog({...log,studyDate:e.target.value})}/>
-        <input placeholder="Note (optional)" value={log.note} onChange={e=>setLog({...log,note:e.target.value})}/>
-        <button className="primary">Add session</button>
-      </form>
-    </section>
-
-    <section className="panel">
-      <h2>Recent study</h2>
-      <List items={data.logs.slice(0,10)} render={x=><div className="score-row"><span>{x.study_date}</span><b>{x.subject}</b><span>{x.category} • {x.minutes} min</span></div>}/>
-    </section>
-  </Layout>
-}
-
-function Stat({label,value}) { return <div className="stat"><span>{label}</span><strong>{value}</strong></div> }
-function Card({title,meta,body}) { return <div className="card"><b>{title}</b><small>{meta}</small><p>{body}</p></div> }
-function List({items,render}) { return items.length ? <div className="list">{items.map((x,i)=><React.Fragment key={x.id||i}>{render(x)}</React.Fragment>)}</div> : <p className="muted">Nothing here yet.</p> }
-
-createRoot(document.getElementById("root")).render(<App />);
+function TeacherSyllabus(){const [data,setData]=useState(null),[form,setForm]=useState({subject:"",chapter:"",status:"not-started"}),[error,setError]=useState(""),[saving,setSaving]=useState(false),[msg,setMsg]=useState("");const load=()=>{setError("");api("/teacher/syllabus").then(setData).catch(e=>setError(e.message))};useEffect(load,[]);if(error&&!data)return <section className="panel"><ErrorBox error={error}/><button className="secondary" onClick={load}>Try again</button></section>;if(!data)return <Loading/>;const save=async e=>{e.preventDefault();setError("");setMsg("");setSaving(true);try{await api("/teacher/syllabus",{method:"POST",body:JSON.stringify(form)});setForm({subject:"",chapter:"",status:"not-started"});setMsg("Chapter saved.");await load()}catch(e){setError(e.message)}finally{setSaving(false)}};return <><section className="panel"><h2>Manage syllabus</h2><form className="form-grid" onSubmit={save}><input placeholder="Subject" value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})} required/><input placeholder="Chapter" value={form.chapter} onChange={e=>setForm({...form,chapter:e.target.value})} required/><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}><option value="not-started">Not started</option><option value="in-progress">In progress</option><option value="completed">Completed</option></select><button className="primary" disabled={saving}>{saving?"Saving…":"Save chapter"}</button></form>{msg&&<p className="success">{msg}</p>}{error&&<ErrorBox error={error}/>}</section><section className="panel"><h2>Current syllabus</h2><List items={data.chapters} empty="No syllabus chapters yet." render={c=><div className="item"><div><b>{c.subject}</b><small>{c.chapter}</small></div><span className={`badge ${c.status}`}>{c.status}</span></div>}/></section></>}
+function StudentApp({user,logout}){const [tab,setTab]=useState("overview"),[data,setData]=useState(null),[attendance,setAttendance]=useState(null),[syllabus,setSyllabus]=useState(null),[log,setLog]=useState({category:"self-study",subject:"",minutes:"",studyDate:localDateInput(),note:""}),[note,setNote]=useState({}),[error,setError]=useState(""),[sectionError,setSectionError]=useState("");const load=()=>api("/student/dashboard").then(setData).catch(e=>setError(e.message));useEffect(load,[]);useEffect(()=>{setSectionError("");if(tab==="attendance")api("/student/attendance").then(setAttendance).catch(e=>setSectionError(e.message));if(tab==="syllabus")api("/student/syllabus").then(setSyllabus).catch(e=>setSectionError(e.message))},[tab]);if(!data)return error?<><Layout user={user} title="Student dashboard" logout={logout}/><div className="container"><ErrorBox error={error}/></div></>:<Loading/>;const submit=async id=>{try{await api(`/student/homework/${id}/submit`,{method:"POST",body:JSON.stringify({note:note[id]||""})});load()}catch(e){setError(e.message)}};const addLog=async e=>{e.preventDefault();try{await api("/student/study-log",{method:"POST",body:JSON.stringify(log)});setLog({...log,subject:"",minutes:"",note:""});load()}catch(e){setError(e.message)}};const total=minutesToHours(data.stats.total_study_minutes),week=minutesToHours(data.stats.week_minutes);return <Layout user={user} title={`Welcome back, ${user.name.split(" ")[0]}`} logout={logout} nav={["overview","study","homework","tests","attendance","syllabus"]} tab={tab} setTab={setTab}>{tab==="overview"&&<StudentOverview data={data} week={week} total={total} setTab={setTab}/>} {tab==="study"&&<StudentStudy data={data} log={log} setLog={setLog} addLog={addLog}/>} {tab==="homework"&&<StudentHomework data={data} note={note} setNote={setNote} submit={submit}/>} {tab==="tests"&&<StudentTests data={data}/>} {sectionError&&<ErrorBox error={sectionError}/>} {tab==="attendance"&&<StudentAttendance data={attendance}/>} {tab==="syllabus"&&<StudentSyllabus data={syllabus}/>}</Layout>}
+function StudentOverview({data,week,total,setTab}){return <><div className="grid four"><Stat label="This week" value={`${week}h`} sub={<Trend value={data.stats.study_trend}/>}/><Stat label="Study total" value={`${total}h`}/><Stat label="Test average" value={`${Number(data.stats.average_percentage||0).toFixed(1)}%`}/><Stat label="Attendance" value={`${data.stats.attendance_percentage||0}%`}/></div><div className="grid four"><Stat label="Syllabus" value={`${data.stats.syllabus_percentage||0}%`}/><Stat label="Tests taken" value={data.stats.tests_taken||0}/><Stat label="Homework" value={`${data.homework.filter(x=>x.submitted_at).length}/${data.homework.length}`}/><Stat label="Recent sessions" value={data.logs.slice(0,7).length}/></div><div className="dashboard-grid"><section className="panel"><div className="panel-head"><h2>Study by subject</h2><button className="secondary" onClick={()=>setTab("study")}>Open study</button></div><MiniBars items={data.subjects}/></section><section className="panel"><div className="panel-head"><h2>Study type</h2><button className="secondary" onClick={()=>setTab("study")}>Details</button></div><MiniBars items={data.categories} labelKey="category"/></section></div><section className="panel"><div className="panel-head"><div><h2>Your progress</h2><p className="muted">Study, tests, homework, attendance and syllabus at a glance.</p></div></div><div className="progress-grid"><div><b>Study</b><small><Trend value={data.stats.study_trend}/></small></div><div><b>Tests</b><small>{Number(data.stats.average_percentage||0).toFixed(1)}% average</small></div><div><b>Homework</b><small>{data.homework.filter(x=>x.submitted_at).length}/{data.homework.length} submitted</small></div><div><b>Syllabus</b><small>{data.stats.syllabus_percentage||0}% complete</small></div></div></section><section className="panel"><div className="panel-head"><h2>Recent activity</h2><button className="secondary" onClick={()=>setTab("homework")}>Homework</button></div><List items={data.logs.slice(0,8)} render={x=><div className="activity"><div className="activity-dot study"/><div><b>{x.subject}</b><span> {x.category} • {x.minutes} minutes</span><small>{x.study_date}</small></div></div>}/></section></>}
+function StudentStudy({data,log,setLog,addLog}){return <><section className="panel"><h2>Log study time</h2><form className="form-grid" onSubmit={addLog}><select value={log.category} onChange={e=>setLog({...log,category:e.target.value})}><option value="self-study">Self-study</option><option value="tuition">Tuition</option><option value="outside">Outside</option></select><input placeholder="Subject" value={log.subject} onChange={e=>setLog({...log,subject:e.target.value})} required/><input type="number" min="1" placeholder="Minutes" value={log.minutes} onChange={e=>setLog({...log,minutes:e.target.value})} required/><input type="date" value={log.studyDate} onChange={e=>setLog({...log,studyDate:e.target.value})}/><input placeholder="Note (optional)" value={log.note} onChange={e=>setLog({...log,note:e.target.value})}/><button className="primary">Add session</button></form></section><section className="panel"><div className="panel-head"><h2>Study summary</h2><span className="pill">{minutesToHours(data.stats.week_minutes)}h this week</span></div><MiniBars items={data.subjects}/></section><section className="panel"><h2>Recent study</h2><List items={data.logs} render={x=><div className="item"><div><b>{x.subject}</b><small>{x.study_date} • {x.category}</small></div><strong>{x.minutes} min</strong></div>}/></section></>}
+function StudentHomework({data,note,setNote,submit}){return <section className="panel"><h2>Homework</h2><List items={data.homework} render={h=><div className="item"><div><b>{h.title}</b><p>{h.description}</p><small>Due: {h.due_date||"No date"}</small><div className="status-group"><span className={`badge ${h.status||"pending"}`}>{h.status||"pending"}</span>{h.feedback&&<small>Feedback: {h.feedback}</small>}</div></div>{h.status!=="reviewed"&&<div className="submit-box"><input placeholder="Submission note" value={note[h.id]??h.submission_note??""} onChange={e=>setNote({...note,[h.id]:e.target.value})}/><button className="primary small-btn" onClick={()=>submit(h.id)}>{h.submitted_at?"Update":"Submit"}</button></div>}</div>}/></section>}
+function StudentTests({data}){const scores=data.tests.filter(t=>t.marks!=null);const trendValue=scores.length>1?trend(scores[0].percentage,scores[1].percentage):"stable";return <><section className="panel"><div className="grid three"><Stat label="Average" value={`${Number(data.stats.average_percentage||0).toFixed(1)}%`}/><Stat label="Latest" value={scores[0]?`${scores[0].percentage}%`:"—"}/><Stat label="Trend" value={<Trend value={trendValue}/>}/></div></section><section className="panel"><h2>Score history</h2><List items={data.tests} render={t=><div className="score-row"><span><b>{t.title}</b><small>{t.subject} • {t.test_date||"No date"}</small></span><b>{t.marks==null?"—":`${t.marks}/${t.max_marks}`}</b><strong>{t.percentage==null?"—":`${t.percentage}%`}</strong></div>}/></section></>}
+function StudentAttendance({data}){if(!data)return <Loading/>;return <><div className="grid four"><Stat label="Attendance" value={`${data.percentage}%`}/><Stat label="Present" value={data.present}/><Stat label="Absent" value={data.absent}/><Stat label="Current streak" value={`${data.currentStreak} days`}/><Stat label="Longest streak" value={`${data.longestStreak} days`}/></div><section className="panel"><h2>Attendance history</h2><List items={data.records} render={x=><div className="item"><b>{x.attendance_date}</b><span className={`badge ${x.status}`}>{x.status}</span></div>}/></section></>}
+function StudentSyllabus({data}){if(!data)return <Loading/>;return <>{data.subjects.map(s=><section className="panel" key={s.subject}><div className="panel-head"><div><h2>{s.subject}</h2><p className="muted">{s.completed}/{s.total} chapters completed</p></div><b>{s.percentage}%</b></div><div className="progress"><i style={{width:`${s.percentage}%`}}/></div><List items={s.chapters} render={c=><div className="item"><div><b>{c.chapter}</b></div><span className={`badge ${c.status}`}>{c.status}</span></div>}/></section>)}</>}
+function minutesToHours(m){return Number((Number(m||0)/60).toFixed(1))}function trend(current,previous){if(!previous)return current>0?"improving":"stable";const d=(current-previous)/previous*100;return d>5?"improving":d<-5?"declining":"stable"}
+createRoot(document.getElementById("root")).render(<App/>);
