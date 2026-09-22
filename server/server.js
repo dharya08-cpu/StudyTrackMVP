@@ -215,6 +215,8 @@ function ensureDemoData(){
 ensureDemoData();
 
 function auth(req,res,next){ const h=req.headers.authorization||""; const token=h.startsWith("Bearer ")?h.slice(7).trim():null; if(!token)return res.status(401).json({error:"Authentication required"}); try{req.user=jwt.verify(token,JWT_SECRET);next();}catch{res.status(401).json({error:"Invalid or expired token"});} }
+function role(...roles){return (req,res,next)=>{if(!roles.includes(req.user.role))return res.status(403).json({error:"Forbidden"});next();}}
+
 const authAttempts=new Map();
 function loginRateLimit(req,res,next){const key=(req.ip||"unknown").replace(/^::ffff:/,"");const now=Date.now();const current=authAttempts.get(key)||{count:0,reset:now+10*60*1000};if(now>current.reset){current.count=0;current.reset=now+10*60*1000;}if(current.count>=20)return res.status(429).json({error:"Too many login attempts. Please try again later."});req._loginKey=key;req._loginAttempt=current;next();}
 function recordFailedLogin(req){if(req._loginAttempt){req._loginAttempt.count++;authAttempts.set(req._loginKey,req._loginAttempt);}}
