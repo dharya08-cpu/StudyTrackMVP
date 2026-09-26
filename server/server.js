@@ -224,6 +224,38 @@ function clearLoginAttempts(req){if(req._loginKey)authAttempts.delete(req._login
 function signUser(u){return jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role,class_code:u.class_code},JWT_SECRET,{expiresIn:"7d"});}
 
 app.get("/api/health",(_,res)=>res.json({ok:true}));
+app.post("/api/admin/create-teacher",(req,res)=>{
+  const adminKey=process.env.ADMIN_KEY;
+  if(!adminKey||req.get("x-admin-key")!==adminKey)return res.status(403).json({error:"Forbidden"});
+
+  const teacherName=boundedText(req.body?.teacherName,100,true);
+  const teacherEmail=String(req.body?.teacherEmail||"").trim().toLowerCase();
+  const teacherPassword=String(req.body?.teacherPassword??"");
+  const className=boundedText(req.body?.className,100,true);
+  const classCode=String(req.body?.classCode??"").trim().toUpperCase();
+  if(!teacherName||!validEmail(teacherEmail)||teacherPassword.length<6||teacherPassword.length>128||!className||!/^[A-Z0-9]{4,12}$/.test(classCode)){
+    return res.status(400).json({error:"Teacher name, valid email, a 6-128 character password, class name and a 4-12 character alphanumeric class code are required"});
+  }
+  if(db.prepare("SELECT 1 FROM users WHERE email=?").get(teacherEmail)||db.prepare("SELECT 1 FROM classes WHERE code=?").get(classCode)){
+    return res.status(409).json({error:"Email or class code is already taken"});
+  }
+
+  const passwordHash=bcrypt.hashSync(teacherPassword,10);
+  const createTeacherAndClass=db.transaction(()=>{
+    const teacherId=db.prepare("INSERT INTO users(name,email,password_hash,role,class_code) VALUES(?,?,?,?,?)")
+      .run(teacherName,teacherEmail,passwordHash,"teacher",classCode).lastInsertRowid;
+    db.prepare("INSERT INTO classes(teacher_id,name,code) VALUES(?,?,?)").run(teacherId,className,classCode);
+    return Number(teacherId);
+  });
+  let id;
+  try{
+    id=createTeacherAndClass();
+  }catch(error){
+    if(error.code==="SQLITE_CONSTRAINT_UNIQUE")return res.status(409).json({error:"Email or class code is already taken"});
+    throw error;
+  }
+  res.status(201).json({id,email:teacherEmail,classCode});
+});
 app.post("/api/auth/login",loginRateLimit,(req,res)=>{const email=String(req.body?.email||"").trim().toLowerCase();const password=String(req.body?.password||"");const requestedRole=req.body?.role;const u=db.prepare("SELECT * FROM users WHERE email=?").get(email);if(!u||(requestedRole&&u.role!==requestedRole)||!bcrypt.compareSync(password,u.password_hash)){recordFailedLogin(req);return res.status(401).json({error:"Invalid credentials or role"});}clearLoginAttempts(req);res.json({token:signUser(u),user:{id:u.id,name:u.name,email:u.email,role:u.role,class_code:u.class_code}});});
 app.post("/api/auth/register",loginRateLimit,(req,res)=>{const name=boundedText(req.body?.name,100,true),email=String(req.body?.email||"").trim().toLowerCase(),password=String(req.body?.password||""),code=String(req.body?.classCode||"").trim().toUpperCase();const cls=db.prepare("SELECT * FROM classes WHERE code=?").get(code);if(!cls)return res.status(400).json({error:"Invalid class code"});if(!name||!validEmail(email)||password.length<6||password.length>128)return res.status(400).json({error:"Name, valid email and a 6-128 character password are required"});try{const id=db.prepare("INSERT INTO users(name,email,password_hash,role,class_code) VALUES(?,?,?,?,?)").run(name,email,bcrypt.hashSync(password,10),"student",code).lastInsertRowid;clearLoginAttempts(req);const u=db.prepare("SELECT * FROM users WHERE id=?").get(id);res.status(201).json({token:signUser(u),user:{id:u.id,name:u.name,email:u.email,role:u.role,class_code:u.class_code}});}catch{recordFailedLogin(req);res.status(400).json({error:"Email may already be registered"});}});
 app.get("/api/me",auth,(req,res)=>res.json({user:db.prepare("SELECT id,name,email,role,class_code FROM users WHERE id=?").get(req.user.id)}));
