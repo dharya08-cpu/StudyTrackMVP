@@ -9,3 +9,6 @@
 @media(max-width:600px){.filter-grid{gap:8px}.table-wrap{margin-inline:-2px}.table-wrap table{font-size:13px}.table-wrap th,.table-wrap td{padding:11px 8px}.student-pills{padding-bottom:4px}.student-pills button{flex:0 0 auto}.attendance-toggle{width:100%}.attendance-toggle button{flex:1}.modal{max-height:90vh;overflow:auto}}
 
 .trend.new{color:#2563eb}
+.file-button{display:inline-flex;align-items:center;gap:6px}
+.file-download{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap}
+.error-text{color:#991b1b;font-size:12px}

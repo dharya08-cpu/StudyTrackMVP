@@ -3,6 +3,9 @@ import cors from "cors";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
+import { createClient } from "@supabase/supabase-js";
+import multer from "multer";
+import ws from "ws";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -11,6 +14,16 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? "" : "studytrack-dev-secret");
 if (process.env.NODE_ENV === "production" && !JWT_SECRET) { throw new Error("JWT_SECRET must be configured in production"); }
+const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
+const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+const SUPABASE_BUCKET = String(process.env.SUPABASE_BUCKET || "").trim();
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { realtime: { transport: ws } })
+  : null;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const configuredDbPath = process.env.DB_PATH;
@@ -51,6 +64,8 @@ CREATE TABLE IF NOT EXISTS homework (
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   due_date TEXT,
+  file_url TEXT,
+  file_name TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE
@@ -64,6 +79,8 @@ CREATE TABLE IF NOT EXISTS tests (
   max_marks INTEGER NOT NULL,
   solution TEXT NOT NULL DEFAULT '',
   test_date TEXT,
+  file_url TEXT,
+  file_name TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE
@@ -130,6 +147,10 @@ function ensureColumn(table, column, definition) {
 ensureColumn("homework_submissions", "status", "TEXT NOT NULL DEFAULT 'submitted'");
 ensureColumn("homework_submissions", "feedback", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("homework_submissions", "reviewed_at", "TEXT");
+ensureColumn("homework", "file_url", "TEXT");
+ensureColumn("homework", "file_name", "TEXT");
+ensureColumn("tests", "file_url", "TEXT");
+ensureColumn("tests", "file_name", "TEXT");
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_study_logs_student_date ON study_logs(student_id, study_date);
 CREATE INDEX IF NOT EXISTS idx_study_logs_student_subject ON study_logs(student_id, subject);
@@ -223,6 +244,59 @@ function recordFailedLogin(req){if(req._loginAttempt){req._loginAttempt.count++;
 function clearLoginAttempts(req){if(req._loginKey)authAttempts.delete(req._loginKey);}
 function signUser(u){return jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role,class_code:u.class_code},JWT_SECRET,{expiresIn:"7d"});}
 
+function storageConfigured(){return Boolean(supabase && SUPABASE_BUCKET);}
+function uploadSingleFile(req,res,next){
+  upload.single("file")(req,res,error=>{
+    if(!error)return next();
+    if(error instanceof multer.MulterError && error.code==="LIMIT_FILE_SIZE"){
+      return res.status(413).json({error:"File must be 20MB or smaller"});
+    }
+    return res.status(400).json({error:"A single file upload is required"});
+  });
+}
+function safeStorageFilename(originalName){
+  const filename=path.basename(String(originalName||"file")).replace(/[^a-zA-Z0-9._-]/g,"-").replace(/-+/g,"-").slice(0,180);
+  return filename||"file";
+}
+function attachmentRecord(type,id){
+  const table=type==="homework"?"homework":"tests";
+  return db.prepare(`SELECT ${table}.*,c.code class_code,c.teacher_id class_teacher_id FROM ${table} JOIN classes c ON c.id=${table}.class_id WHERE ${table}.id=?`).get(id);
+}
+function canAccessAttachment(record,user){
+  if(user.role==="teacher")return record.class_teacher_id===user.id;
+  if(user.role!=="student")return false;
+  return Boolean(db.prepare("SELECT id FROM users WHERE id=? AND role='student' AND class_code=?").get(user.id,record.class_code));
+}
+async function attachFile(req,res,type){
+  const record=attachmentRecord(type,req.params.id);
+  if(!record)return res.status(404).json({error:`${type==="homework"?"Homework":"Test"} not found`});
+  if(record.class_teacher_id!==req.user.id)return res.status(404).json({error:`${type==="homework"?"Homework":"Test"} not found`});
+  if(!req.file)return res.status(400).json({error:"A file is required"});
+  if(!storageConfigured())return res.status(503).json({error:"File storage is not configured"});
+
+  const filename=safeStorageFilename(req.file.originalname);
+  const storagePath=`${record.class_code}/${type}/${Date.now()}-${record.id}-${filename}`;
+  const bucket=supabase.storage.from(SUPABASE_BUCKET);
+  const uploaded=await bucket.upload(storagePath,req.file.buffer,{contentType:req.file.mimetype||"application/octet-stream",upsert:false});
+  if(uploaded.error)return res.status(502).json({error:"File upload failed"});
+  try{
+    db.prepare(`UPDATE ${type} SET file_url=?,file_name=? WHERE id=?`).run(storagePath,req.file.originalname,record.id);
+  }catch(error){
+    await bucket.remove([storagePath]).catch(()=>{});
+    throw error;
+  }
+  res.status(201).json({fileName:req.file.originalname});
+}
+async function downloadFile(req,res,type){
+  const record=attachmentRecord(type,req.params.id);
+  if(!record||!record.file_url)return res.status(404).json({error:"File not found"});
+  if(!canAccessAttachment(record,req.user))return res.status(403).json({error:"Forbidden"});
+  if(!storageConfigured())return res.status(503).json({error:"File storage is not configured"});
+  const signed=await supabase.storage.from(SUPABASE_BUCKET).createSignedUrl(record.file_url,60*60);
+  if(signed.error||!signed.data?.signedUrl)return res.status(502).json({error:"File download is unavailable"});
+  res.json({url:signed.data.signedUrl,fileName:record.file_name,expiresIn:60*60});
+}
+
 app.get("/api/health",(_,res)=>res.json({ok:true}));
 app.post("/api/admin/create-teacher",(req,res)=>{
   const adminKey=process.env.ADMIN_KEY;
@@ -261,7 +335,7 @@ app.post("/api/auth/register",loginRateLimit,(req,res)=>{const name=boundedText(
 app.get("/api/me",auth,(req,res)=>res.json({user:db.prepare("SELECT id,name,email,role,class_code FROM users WHERE id=?").get(req.user.id)}));
 
 function homeworkForClass(classId){return db.prepare(`SELECT h.*,COUNT(DISTINCT hs.student_id) submitted_count,SUM(CASE WHEN hs.status='reviewed' THEN 1 ELSE 0 END) reviewed_count,SUM(CASE WHEN hs.submitted_at IS NOT NULL AND h.due_date IS NOT NULL AND date(hs.submitted_at)>date(h.due_date) THEN 1 ELSE 0 END) late_count FROM homework h LEFT JOIN homework_submissions hs ON hs.homework_id=h.id WHERE h.class_id=? GROUP BY h.id ORDER BY h.created_at DESC`).all(classId);}
-function testResultsForClass(classId){return db.prepare(`SELECT t.id,t.title,t.subject,t.max_marks,t.test_date,t.created_at,COUNT(m.id) result_count,ROUND(AVG(CASE WHEN m.id IS NULL THEN NULL ELSE m.marks*100.0/t.max_marks END),1) average_percentage FROM tests t LEFT JOIN marks m ON m.test_id=t.id WHERE t.class_id=? GROUP BY t.id ORDER BY t.test_date DESC,t.created_at DESC`).all(classId);}
+function testResultsForClass(classId){return db.prepare(`SELECT t.id,t.title,t.subject,t.max_marks,t.test_date,t.created_at,t.file_url,t.file_name,COUNT(m.id) result_count,ROUND(AVG(CASE WHEN m.id IS NULL THEN NULL ELSE m.marks*100.0/t.max_marks END),1) average_percentage FROM tests t LEFT JOIN marks m ON m.test_id=t.id WHERE t.class_id=? GROUP BY t.id ORDER BY t.test_date DESC,t.created_at DESC`).all(classId);}
 
 app.get("/api/teacher/overview",auth,role("teacher"),(req,res)=>{
   const cls=classForTeacher(req.user.id); if(!cls)return res.json({class:null,students:[],homework:[],tests:[],metrics:{}});
@@ -319,6 +393,8 @@ app.get("/api/teacher/homework/:id/submissions",auth,role("teacher"),(req,res)=>
 app.post("/api/teacher/homework/:id/review",auth,role("teacher"),(req,res)=>{const h=db.prepare("SELECT h.* FROM homework h JOIN classes c ON c.id=h.class_id WHERE h.id=? AND c.teacher_id=?").get(req.params.id,req.user.id);if(!h)return res.status(404).json({error:"Homework not found"});const sub=db.prepare("SELECT hs.* FROM homework_submissions hs JOIN users u ON u.id=hs.student_id JOIN classes c ON c.code=u.class_code WHERE hs.homework_id=? AND hs.student_id=? AND c.teacher_id=? AND c.id=?").get(h.id,req.body.studentId,req.user.id,h.class_id);if(!sub)return res.status(404).json({error:"Submission not found"});const feedback=String(req.body.feedback||"").trim();if(feedback.length>5000)return res.status(400).json({error:"Feedback is too long"});db.prepare("UPDATE homework_submissions SET status='reviewed',feedback=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(feedback,sub.id);res.json({ok:true});});
 
 app.post("/api/teacher/homework",auth,role("teacher"),(req,res)=>{const cls=classForTeacher(req.user.id);const title=String(req.body.title||"").trim(),description=String(req.body.description||""),dueDate=req.body.dueDate||null;if(!cls||!title||title.length>200||description.length>5000||!(dueDate==null||validDate(dueDate)))return res.status(400).json({error:"Valid title and due date are required"});const id=db.prepare("INSERT INTO homework(teacher_id,class_id,title,description,due_date) VALUES(?,?,?,?,?)").run(req.user.id,cls.id,title,description,dueDate).lastInsertRowid;res.status(201).json(db.prepare("SELECT * FROM homework WHERE id=?").get(id));});
+app.post("/api/teacher/homework/:id/attach",auth,role("teacher"),uploadSingleFile,(req,res)=>attachFile(req,res,"homework"));
+app.get("/api/files/homework/:id",auth,(req,res)=>downloadFile(req,res,"homework"));
 app.get("/api/teacher/results",auth,role("teacher"),(req,res)=>{
   const cls=classForTeacher(req.user.id);
   if(!cls)return res.json({students:[],tests:[]});
@@ -336,6 +412,8 @@ app.get("/api/teacher/results",auth,role("teacher"),(req,res)=>{
   res.json({class:cls,students:results,tests,filters:{subject:subjectFilter,from:fromFilter,to:toFilter}});
 });
 app.post("/api/teacher/tests",auth,role("teacher"),(req,res)=>{const cls=classForTeacher(req.user.id);const title=String(req.body.title||"").trim(),subject=String(req.body.subject||"").trim(),maxMarks=Number(req.body.maxMarks),solution=String(req.body.solution||""),testDate=req.body.testDate||null;if(!cls||!title||title.length>200||!subject||subject.length>100||!Number.isInteger(maxMarks)||maxMarks<=0||maxMarks>100000||!(testDate==null||validDate(testDate)))return res.status(400).json({error:"Valid title, subject, max marks and test date are required"});const id=db.prepare("INSERT INTO tests(teacher_id,class_id,title,subject,max_marks,solution,test_date) VALUES(?,?,?,?,?,?,?)").run(req.user.id,cls.id,title,subject,maxMarks,solution,testDate).lastInsertRowid;res.status(201).json(db.prepare("SELECT * FROM tests WHERE id=?").get(id));});
+app.post("/api/teacher/tests/:id/attach",auth,role("teacher"),uploadSingleFile,(req,res)=>attachFile(req,res,"tests"));
+app.get("/api/files/tests/:id",auth,(req,res)=>downloadFile(req,res,"tests"));
 app.post("/api/teacher/marks",auth,role("teacher"),(req,res)=>{const {testId,studentId,marks,remark}=req.body;const test=db.prepare("SELECT t.* FROM tests t JOIN classes c ON c.id=t.class_id WHERE t.id=? AND c.teacher_id=?").get(testId,req.user.id);const student=studentForTeacher(studentId,req.user.id);if(!test||!student)return res.status(404).json({error:"Test or student not found"});if(!Number.isFinite(Number(marks))||Number(marks)<0||Number(marks)>test.max_marks)return res.status(400).json({error:"Marks are outside the valid range"});db.prepare("INSERT INTO marks(test_id,student_id,marks,remark) VALUES(?,?,?,?) ON CONFLICT(test_id,student_id) DO UPDATE SET marks=excluded.marks,remark=excluded.remark").run(testId,student.id,Number(marks),remark||"");res.json({ok:true,percentage:pct(Number(marks),test.max_marks)});});
 
 app.get("/api/teacher/attendance",auth,role("teacher"),(req,res)=>{const cls=classForTeacher(req.user.id);if(!cls)return res.json({class:null,records:[]});const date=req.query.date||today();const students=studentsForClass(cls.code);const records=db.prepare("SELECT * FROM attendance WHERE class_id=? AND attendance_date=?").all(cls.id,date);const map=new Map(records.map(r=>[r.student_id,r]));res.json({class:cls,date,students:students.map(s=>({student:s,status:map.get(s.id)?.status||null}))});});

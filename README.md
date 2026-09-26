@@ -47,6 +47,9 @@ Production requires:
 
 - `NODE_ENV=production`
 - `JWT_SECRET` — a long random secret used to sign login tokens
+- `SUPABASE_URL` — your Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY` — the private Supabase service-role key; never expose this to the client
+- `SUPABASE_BUCKET` — the existing Supabase Storage bucket used for homework and test attachments
 - `DB_PATH` — a path on persistent storage, not the repository filesystem
 - `STUDYTRACK_TIMEZONE=Asia/Kolkata` unless your users are in another timezone
 - `CLIENT_ORIGIN` only when the frontend/API are served from different origins
@@ -78,6 +81,9 @@ NODE_ENV=production
 JWT_SECRET=<your long random secret>
 DB_PATH=/var/data/studytrack.db
 STUDYTRACK_TIMEZONE=Asia/Kolkata
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_BUCKET=studytrack-files
 ```
 
 If the API and frontend are served by this same service, do not set `CLIENT_ORIGIN`.
