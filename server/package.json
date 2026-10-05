@@ -1,17 +1,21 @@
 {
   "name": "studytrack-server",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node --watch server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.109.0",
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^11.8.1",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "ws": "^8.18.3"
   }
 }
