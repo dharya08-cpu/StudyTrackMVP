@@ -1,0 +1,21 @@
+# Optional Render blueprint. Secrets are NOT stored here: add them in the Render dashboard (Environment).
+services:
+  - type: web
+    name: studytrack
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - { key: NODE_ENV, value: production }
+      - { key: NODE_VERSION, value: "20" }
+      - { key: TRUST_PROXY, value: "1" }
+      - { key: BACKUP_ENABLED, value: "true" }
+      - { key: DATABASE_URL, sync: false }
+      - { key: SESSION_SECRET, sync: false }
+      - { key: ADMIN_KEY, sync: false }
+      - { key: GOOGLE_CLIENT_ID, sync: false }
+      - { key: APP_URL, sync: false }
+      - { key: SUPABASE_URL, sync: false }
+      - { key: SUPABASE_SERVICE_ROLE_KEY, sync: false }

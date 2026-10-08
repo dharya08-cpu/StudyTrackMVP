@@ -5,3 +5,11 @@ node_modules/
 npm-debug.log*
 .DS_Store
 client/dist/
+# Never commit databases, archives or backups (V3 committed studytrack.db and zipFile.zip by mistake)
+*.db
+*.db-journal
+*.sqlite
+*.zip
+*.ndjson.gz
+backups/
+server/test/e2e/shots/

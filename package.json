@@ -1,15 +1,20 @@
 {
   "name": "studytrack",
-  "version": "2.0.0",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
     "install:all": "npm --prefix server install && npm --prefix client install",
     "build": "npm --prefix server install --omit=dev && npm --prefix client install && npm --prefix client run build",
     "start": "npm --prefix server start",
+    "migrate": "npm --prefix server run migrate",
+    "backup": "npm --prefix server run backup",
+    "backup:verify": "npm --prefix server run backup:verify",
     "qa": "node scripts/qa-static.mjs",
-    "check": "node --check server/server.js"
+    "check": "node scripts/check-syntax.mjs",
+    "test": "npm --prefix server test",
+    "e2e": "node server/test/e2e/run.mjs"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20"
   }
 }
