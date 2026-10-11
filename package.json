@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "install:all": "npm --prefix server install && npm --prefix client install",
-    "build": "npm --prefix server install --omit=dev && npm --prefix client install && npm --prefix client run build",
+    "build": "npm --prefix server install --omit=dev && npm --prefix client install --include=dev && npm --prefix client run build",
     "start": "npm --prefix server start",
     "migrate": "npm --prefix server run migrate",
     "backup": "npm --prefix server run backup",
