@@ -60,7 +60,6 @@ function LoginPage({ config, onLogin, goSignup, goForgot, notice }) {
       {config.googleEnabled && <div className={busy ? "google-wrap busy" : "google-wrap"}><GoogleButton key={`login-${attempt}`} clientId={config.googleClientId} onCredential={google} onError={setError} text="signin_with" /></div>}
       {!config.googleEnabled && !config.passwordEnabled && <div className="warning-text">Sign-in is not configured on this server yet.</div>}
       <p className="switch-line">New to StudyTrack? <button className="link" onClick={goSignup}>Create an account</button></p>
-      <a className="link-a" href="/admin">Owner admin</a>
     </Shell>
   );
 }
