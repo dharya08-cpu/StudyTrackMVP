@@ -1,127 +1,127 @@
-# StudyTrack V3
+# StudyTrack V4
 
-StudyTrack is a student/teacher study management app: study logging, homework, tests/results, attendance, syllabus coverage, analytics and responsive dashboards.
+A study-progress app for students, teachers and coaching institutes. React front end, Express API, **PostgreSQL (Supabase)** database, **Supabase Storage** for files, **Google-only sign-in**.
 
-V3 adds class-code joining with teacher approval, a teacher menu, teacher self sign-up, **Coaching Institutes**, and an **owner admin panel** that lets you control who can use the app.
+Everything in your V4 list is in this version. Deleting a person's data on request: [docs/PRIVACY-REQUESTS.md](docs/PRIVACY-REQUESTS.md). See [docs/V4-CHANGES.md](docs/V4-CHANGES.md) for where each item lives, [docs/SECURITY.md](docs/SECURITY.md) for the security design and [docs/RECOVERY.md](docs/RECOVERY.md) for backups and disaster recovery.
 
-## What's new in V3
+## What is new in V4
 
-| Area | What changed |
-| --- | --- |
-| Teacher menu | A **Menu** button (top-left, with a red badge when requests are waiting) opens a slide-in menu: My classroom, **Students**, Add a class, Coaching institute, Logout. |
-| Student login | After the first login the student is asked for a **class code**, then sees: *"Your request has been sent to X's class. You will be permitted to class once they allow you to enter. Please wait."* The page updates by itself. |
-| Joining requests | Menu → **Students** → **Student Joining Request** (top of the list) shows every request as *"Student A wants to join your Class 2 batch"* with a green **✓ Allow** and a red **✕ Deny**. Allow adds the student immediately. Deny offers **Deny & Remove** and **Deny & Block** (blocking asks "Are you sure?" first). A blocked email can never send a request to any of that teacher's classes; the teacher can unblock later. Students who are removed or blocked see that the teacher didn't allow them to join. |
-| Class rooms | Under **Students** every class is listed (Class 1, Class 2, ...). Opening one shows that class's students, analytics, performance, homework, tests, attendance and syllabus. Teachers can also remove a student from a class. |
-| Teacher sign-up | The Termux step is gone. The teacher login page has **New teacher? Create your account now** (name, email, password, class name, class code). The class code is stored in the database and shows up in your admin panel. No approval needed. |
-| Coaching institutes | **+ Create Your Own Coaching Institute** (with an ⓘ explanation) is in the teacher menu and on the teacher login page. Step 1: email and password. Step 2: institute name, coaching code, phone, city, size, description. It then waits for **your** approval. |
-| Join an institute | **Have an institute code? Join here** on the teacher login page. The code is verified first; then the teacher lands on the institute homepage. |
-| Institute homepage | The institute name with stars and emoji, then every teacher with their classes, student counts, test average, attendance, homework count and a feedback note. Heads and co-heads can add feedback, make other teachers **co-heads**, and remove teachers. |
-| Owner admin panel | Open `/admin`, enter `ADMIN_KEY`. Approve or reject institutes, see every coaching code and class code, suspend / ban / delete, set limits, switch read-only, and make an institute independent after payment. |
+| | |
+|---|---|
+| Database | SQLite became **PostgreSQL** (Supabase). Versioned migrations run automatically on start. |
+| Sign-in | **Gmail + password (e-mail verified) or Google**, Gmail addresses only. Passwords are stored only as scrypt hashes. |
+| Classes | A student can be in **many classes** (`student_class_memberships`). A teacher can create many classes. |
+| Homework fix | Teachers can now **create homework** (text, due date, PDF/JPG/PNG/DOCX file) for one or several classes. |
+| Planner | Weekly timetable, exam countdowns, "what to study today". |
+| Goals | Daily and weekly study goals with progress bar, weekly ticks and streak. |
+| Calendar | Classes, homework deadlines, tests, events and holidays in one calendar. |
+| Announcements | To one class, several classes or the whole institute. |
+| Notifications | Notification centre with an unread bell. |
+| Sessions | **Security > Active sessions**, log out one device, all other devices, or everywhere. |
+| Security | CSRF, CSP and security headers, CORS allow-list, rate limits, upload inspection, private files. |
+| Backups | Daily + weekly backups, **automatic restore test**, recovery runbook. |
 
-## Running locally
+### Two ways to get in
+* **Log in** page: Gmail + password, or *Continue with Google*. If the account exists and the password matches you go straight to the home page; nothing else is asked. A wrong password says "Incorrect password."; an unknown Gmail says there is no account.
+* **Sign up** page: choose Student or Teacher, then either *Sign up with Google* or Gmail + password. Password sign-ups must verify the Gmail through an e-mailed link ([docs/EMAIL-SETUP.md](docs/EMAIL-SETUP.md)). Then a details page appears **once** (name, surname, class/grade, parent or guardian for students, subjects for teachers, optional class code). Google users see their Google name pre-filled to confirm.
+* Forgot password (e-mail link), change password, change linked Gmail with re-verification, log out all devices and active sessions are all included. Only Gmail addresses can sign up.
 
-Requirements: Node.js 20.
+### Demo accounts for showing the app to teachers
+Set `ALLOW_DEMO=true` and redeploy: five accounts, six classes (DEMO01 to DEMO06) and weeks of realistic progress are created automatically. Details and the login list are in [docs/DEMO.md](docs/DEMO.md). Reset them any time from Admin > Demo.
 
-```bash
-npm run build          # installs server + client dependencies and builds the client
-npm start              # serves the API and the built client on PORT (default 3001)
+## Repository layout
+
+```
+client/            React + Vite front end
+  src/             screens: student.jsx, teacher*.jsx, calendar.jsx, planner.jsx, security.jsx, admin.jsx ...
+server/
+  server.js        entry point
+  src/
+    config.js      validated environment (production refuses weak settings)
+    db.js          PostgreSQL pool (parameterised queries only)
+    migrate.js + migrations/001_init.sql
+    google.js      verifies Google ID tokens, verified-Gmail rule
+    sessions.js    server-side sessions, device parsing, admin tokens
+    security.js    headers, CSP, CORS, cookies, CSRF
+    files.js       upload inspection by real content
+    backup.js      snapshot, restore, restore-test, scheduler
+    routes/        every API route, one file per area
+  scripts/         migrate, backup, backup:verify, restore, import:sqlite
+  test/            81 automated tests + end-to-end browser test
+docs/              RECOVERY.md, SECURITY.md, V4-CHANGES.md
 ```
 
-For development, run the API and Vite separately:
+## Setup
 
-```bash
-cd server && npm install && npm start
-cd client && npm install && npm run dev      # http://localhost:5000, proxies /api to :3001
+### 1. Supabase (database and files)
+1. Create a project at supabase.com.
+2. **Database**: Project Settings > Database > *Connection string* > copy the **Transaction pooler** string (works on Render's IPv4 network). Put it in `DATABASE_URL`. Keep `DATABASE_SSL=require`.
+3. **Storage**: create **two PRIVATE buckets**: `studytrack-files` and `studytrack-backups`. Leave "Public bucket" **off**. The server refuses to start in production if a bucket is public, so files can never be reached by guessing URLs.
+4. Project Settings > API > copy the project URL into `SUPABASE_URL` and the **service_role** key into `SUPABASE_SERVICE_ROLE_KEY`. This key is a server secret. Never put it in the client.
+
+### 2. Google sign-in
+1. Google Cloud Console > APIs & Services > **OAuth consent screen**: choose *External*, fill the basic details, then **Publish app** (while it is in "Testing", only 100 listed test users can sign in).
+2. Credentials > **Create credentials > OAuth client ID** > *Web application*.
+3. **Authorized JavaScript origins**: your Render URL (for example `https://studytrack.onrender.com`) and `http://localhost:5000` for local work. No redirect URI is needed.
+4. Copy the **Client ID** into `GOOGLE_CLIENT_ID`.
+
+### 3. Render (one web service)
+* Deploy **one Web Service only** (it serves the website and the API on one address). Do not also run a separate Static Site: sign-in cookies cannot cross between two addresses. Leave *Root Directory* empty.
+* Build command: `npm run build`   Start command: `npm start`   Health check path: `/api/health`
+* Environment variables (also listed in `server/.env.example` and `render.yaml`):
+
+| Variable | Value |
+|---|---|
+| `NODE_ENV` | `production` |
+| `MAIL_PROVIDER`, `MAIL_WEBHOOK_URL`, `MAIL_WEBHOOK_TOKEN` | optional: turns on Gmail + password sign-up ([docs/EMAIL-SETUP.md](docs/EMAIL-SETUP.md)) |
+| `ALLOW_DEMO` | optional: `true` creates the demo accounts ([docs/DEMO.md](docs/DEMO.md)) |
+| `DATABASE_URL` | Supabase pooler connection string |
+| `SESSION_SECRET` | 32+ random characters (`openssl rand -hex 32`) |
+| `ADMIN_KEY` | 12+ characters; your owner key for `/admin` |
+| `GOOGLE_CLIENT_ID` | from step 2 |
+| `APP_URL` | your public https URL |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | from step 1 |
+| `TRUST_PROXY` | `1` |
+| `BACKUP_ENABLED` | `true` |
+
+The old `JWT_SECRET` and `DB_PATH` variables are no longer used. Delete them.
+
+### 4. Bring your V3 data over (optional, one time)
+Download the SQLite file from your running V3 service (or use a copy), then, from a machine with Node 22+ (or `npm i --no-save better-sqlite3`) and `DATABASE_URL` set:
+```
+npm --prefix server install
+npm run import:sqlite --prefix server -- --sqlite ./studytrack.db --confirm
+```
+Students who were in a class are turned into real memberships. Passwords are **not** copied. Each person signs in with Google once and is matched to their old account by e-mail (only Gmail addresses can sign in; the import prints a note for any other address).
+
+### 5. Local development
+```
+cp server/.env.example server/.env       # fill in values (a Supabase DB is fine for development)
+npm run install:all
+npm --prefix server run dev              # API on :3001
+npm --prefix client run dev              # app on :5000 (proxies /api to :3001)
 ```
 
-Copy `server/.env.example` to `server/.env` for local settings. The owner admin panel needs `ADMIN_KEY`.
+## Everyday commands
 
-## Environment variables
+| Command | What it does |
+|---|---|
+| `npm test` | 81 server tests (security, multi-class, uploads, planner, backups, import ...) |
+| `npm run e2e` | Real-browser end-to-end test, 19 steps (needs Playwright + Chromium) |
+| `npm run qa` | Static checks of the security invariants |
+| `npm run check` | Syntax check of every server file |
+| `npm run migrate` | Apply database migrations manually (the server also does this on start) |
+| `npm run backup` / `backup:verify` | Take a backup now / prove the newest backup restores |
 
-Production requires:
-
-- `NODE_ENV=production`
-- `JWT_SECRET` – long random secret for login tokens
-- `ADMIN_KEY` – **12+ characters**. This is the password for `/admin`. Keep it private.
-- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_BUCKET` – file storage for homework/test attachments
-- `DB_PATH` – path on persistent storage (see "Database safety")
-- `STUDYTRACK_TIMEZONE=Asia/Kolkata` unless your users are elsewhere
-
-Optional:
-
-- `CLIENT_ORIGIN` – only when frontend and API are on different origins
-- `TRUST_PROXY` – number of proxies in front of Node. Defaults to `1` in production (correct for Render) so rate limits see each visitor's real IP. Use `0` if Node faces the internet directly.
-- `TEACHER_SIGNUP_LIMIT` – teacher sign-ups / institute requests per IP per hour (default 20)
-- `INITIAL_TEACHER_*`, `INITIAL_CLASS_*`, `INITIAL_STUDENT_PASSWORD` – seed a demo teacher on a brand-new production database. **Not required any more**: a fresh database can start empty because teachers sign up themselves.
-
-`ADMIN_KEY` used to guard the old Termux "create teacher" command. That endpoint no longer exists; the key now opens the admin panel instead.
-
-## Owner admin panel (`/admin`)
-
-Sign in with `ADMIN_KEY`. The session lasts 12 hours and is a different kind of token from normal logins, so no teacher or student can use it. After 8 wrong keys from one address the login is locked for 15 minutes.
-
-**Approval queue.** A new institute is *pending*. Its coaching code does not work and the head sees "Waiting for approval" until you press **Approve**. **Reject** (with an optional reason) lets the head fix details and submit again.
-
-**Controls per institute**
-
-- **Suspend / Reactivate** – everyone in the institute (teachers and students) is locked out immediately, including people already logged in. Data is kept.
-- **Ban / Unban** – same lock-out, recorded as a ban.
-- **Limits** – maximum teachers, maximum students, storage in MB (blank = unlimited), and **Read-only mode** (everyone can look, nobody can change anything). Teacher joins, student approvals and uploads are refused with a clear message once a limit is reached.
-- **Usage** – teachers, classes, students, stored records and file storage used.
-- **Private note** – only you see it (payment status, agreement, etc.).
-- **Delete institute only** – removes the institute and its code; the teachers keep their accounts and classes as ordinary independent teachers.
-- **Delete institute and all its data** – also deletes those teacher accounts, their classes, homework, tests, marks and uploaded files. Students stay registered but lose their class. You must type `DELETE ALL`.
-
-**Make independent (after payment).** Clears every limit, pause and read-only setting and detaches the institute from your control. While independent, the panel refuses to suspend, ban, limit or delete it or anything in it. **Return to managed control** reverses it. Only an *active* institute can be made independent.
-
-**Classes and Teachers tabs** list every class code and every teacher account (including independent teachers who never joined an institute) with suspend / reactivate / delete for classes and ban / unban for teachers. **Activity** shows the last 60 admin actions.
-
-Demo safety: an unapproved institute cannot be used, and a suspended one locks everyone out at once, so nobody can keep running a demo without your approval. Individual independent teachers (who never created an institute) can still be suspended or banned from the Classes and Teachers tabs.
-
-## Database safety
-
-Startup migrations only add tables, columns and indexes; existing records are never deleted. Upgrading from V2 keeps all users, classes and data. Students who already belong to a class go straight to their dashboard.
-
-SQLite is safe for this single-instance MVP **only on persistent storage**. A free Render web service has an ephemeral filesystem, so the database can be lost on restart or redeploy. Attach a persistent disk (paid) mounted at `/var/data` and set `DB_PATH=/var/data/studytrack.db`, or move to managed PostgreSQL before storing real student data.
-
-## Render
-
-Use a **Web Service** connected to this repository.
-
-- Root Directory: leave blank
-- Build Command: `npm run build`
-- Start Command: `npm start`
-- Health Check Path: `/api/health`
-- Node: 20
-
-If API and frontend run on this one service, do not set `CLIENT_ORIGIN`. The `/admin` page is served by the same app.
-
-## Tests and QA
-
-```bash
-npm run check     # syntax check of server.js
-npm run qa        # dependency-free source checks (includes a route-protection scan)
-npm test          # API integration tests against the real server (run `npm install` in server/ first)
+### About the tests
+The suite runs against an in-memory SQLite stand-in so it needs no database setup (Node 22+ has SQLite built in; on Node 20 `npm install` adds the `better-sqlite3` dev dependency). Because production uses PostgreSQL, a lint test (`sql-lint.test.mjs`) rejects any SQL that only works on SQLite or that PostgreSQL would refuse. **To run the whole suite against real PostgreSQL**, point it at a throw-away database:
 ```
+TEST_DATABASE_URL=postgresql://user:pass@host:5432/scratchdb npm test
+```
+Each test gets its own schema (`t_xxxx`). Do this once after your first deploy.
 
-The integration tests start `server.js` on a random port with a temporary database. They cover class joining, approve / deny / block, multi-class rooms, teacher sign-up, institutes, roles, suspension, bans, limits, read-only mode, independent mode and deletion. Two storage tests are skipped unless `STUDYTRACK_STORAGE_STUB=1` is set, so a normal run never touches your real Supabase bucket.
-
-## API overview
-
-Public: `POST /api/auth/login`, `/register` (student), `/teacher-register`, `/teacher-join-institute`, `/institute-request`.
-
-Teacher: `GET /api/teacher/context`, `POST /api/teacher/classes`, `GET /api/teacher/join-requests`, `POST /api/teacher/join-requests/:id/approve|deny`, `DELETE /api/teacher/blocks/:id`, `DELETE /api/teacher/students/:id`, plus the existing class endpoints. The selected class is sent in the `x-class-id` header.
-
-Student: `GET /api/student/class-status`, `POST /api/student/join-request`, `POST /api/student/join-request/cancel`, plus the existing student endpoints.
-
-Institute: `GET /api/institute/home`, `POST /api/institute/join|leave`, `POST /api/institute/members/:id/role|note`, `DELETE /api/institute/members/:id`.
-
-Admin (admin token only): `/api/admin/login|overview|log|institutes|classes|teachers` with status, limits, control, note and delete routes.
-
-## Known limits
-
-- Rate limits are kept in server memory, so they reset when the server restarts and apply per server instance.
-- Students waiting for approval check for the answer every 7 seconds while the page is visible (no websockets).
-- Per-institute usage shows record counts and file bytes; it does not measure database bytes per institute (the overview shows the total database size).
-- Co-heads can manage teachers but cannot change or remove the head, and the head cannot leave the institute. There is no in-app way to transfer the head role yet; that is a manual database change for now.
-- A teacher can belong to one institute at a time.
+## Known limits (honest list)
+* Rate-limit counters live in server memory: right for one instance (Render free/starter). With several instances, move them to Redis.
+* The city in *Active sessions* appears only if your host adds a geo header (for example Cloudflare). Otherwise a masked address is shown. Full IPs are never stored.
+* Backups are logical (JSON) snapshots held in memory while being built: fine up to a few hundred MB. For larger databases use Supabase's own point-in-time recovery as well.
+* Files are not virus-scanned by an antivirus engine. They are inspected by real content (type, structure, macros, scripts, embedded files) and stored in a private bucket, which blocks the common attacks.

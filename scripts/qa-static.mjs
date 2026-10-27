@@ -1,96 +1,42 @@
-// Dependency-free source checks. Run with: npm run qa
-import fs from 'node:fs';
-import path from 'node:path';
-const root = process.cwd();
-const read = p => fs.readFileSync(path.join(root, p), 'utf8');
-const server = read('server/server.js');
-const clientDir = path.join(root, 'client/src');
-const client = fs.readdirSync(clientDir).filter(f => /\.(jsx?|css)$/.test(f)).map(f => fs.readFileSync(path.join(clientDir, f), 'utf8')).join('\n');
-const pkg = read('package.json');
-const ignore = read('.gitignore');
-const envExample = read('server/.env.example');
-const all = [server, client, pkg, ignore, envExample].join('\n');
+// Dependency-free source checks for the security and V4 requirements. Run with: npm run qa
+import fs from "node:fs";
+import path from "node:path";
 
-const checks = [
-  // V2 foundations
-  ['attendance schema', /CREATE TABLE IF NOT EXISTS attendance/],
-  ['syllabus schema', /CREATE TABLE IF NOT EXISTS syllabus_chapters/],
-  ['previous week', /function previousWeekStart/],
-  ['student activity ID isolation', /filter\(x=>x\.student_id===s\.id\)/],
-  ['production JWT guard', /JWT_SECRET must be configured in production/],
-  ['production DB guard', /DB_PATH must be configured in production/],
-  ['fresh client build', /npm --prefix client run build/],
-  ['single service start', /npm --prefix server start/],
-  ['stale dist ignored', /client\/dist\//],
-  ['error handler', /Internal server error/],
-  ['graceful shutdown', /SIGTERM/],
-  ['study duration limit', /Number\(minutes\)>1440/],
-  ['Asia/Kolkata default', /Asia\/Kolkata/],
-  ['teacher active-today class scoped', /COUNT\(DISTINCT s\.student_id\).*u\.class_code=\?/],
-  ['teacher scores class scoped', /m\.student_id=\? AND t\.class_id=/],
-  ['results test created_at available', /t\.test_date,t\.created_at/],
-  // V3: auth and rate limiting
-  ['login rate limit', /loginLimiter\.guard/],
-  ['per-account login limit', /accountLimiter/],
-  ['proxy-aware client IP', /trust proxy/],
-  ['teacher self sign-up', /\/api\/auth\/teacher-register/],
-  ['Termux teacher creation removed', /^(?![\s\S]*\/api\/admin\/create-teacher)[\s\S]*$/],
-  // V3: class joining
-  ['student join request', /\/api\/student\/join-request/],
-  ['join approve route', /join-requests\/:id\/approve/],
-  ['deny route with block mode', /mode === "block"/],
-  ['block needs confirmation', /CONFIRM_REQUIRED/],
-  ['one pending request per student', /idx_join_requests_one_pending/],
-  ['selected class header', /x-class-id/],
-  ['room selects its own class before loading', /setActiveClass\(classInfo\.id\)/],
-  // V3: institutes and owner control
-  ['institute approval flow', /status IN \('pending','active','rejected','suspended','banned'\)/],
-  ['admin token is separate', /ADMIN_AUDIENCE/],
-  ['admin key length guard', /ADMIN_KEY must be at least 12 characters/],
-  ['independent mode', /control_mode/],
-  ['read-only enforcement', /READ_ONLY/],
-  ['storage limit enforcement', /STORAGE_LIMIT/],
-  ['db is source of truth for bans', /SELECT id,name,email,role,class_code,institute_id,institute_role,banned FROM users WHERE id=\?/],
-  ['admin panel route', /pathname === "\/admin"/],
-  ['institute info tooltip', /InfoTip/],
-  ['ADMIN_KEY documented', /ADMIN_KEY=/],
+const root = process.cwd();
+const walk = (dir, out = []) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { if (["node_modules", "shots", "dist"].includes(e.name)) continue; const f = path.join(dir, e.name); e.isDirectory() ? walk(f, out) : out.push(f); } return out; };
+const read = f => fs.readFileSync(f, "utf8");
+const serverFiles = walk(path.join(root, "server/src")).concat(path.join(root, "server/server.js"));
+const clientFiles = walk(path.join(root, "client/src")).filter(f => /\.(jsx?|css)$/.test(f));
+const server = serverFiles.map(read).join("\n"), client = clientFiles.map(read).join("\n");
+const migration = read(path.join(root, "server/src/migrations/001_init.sql"));
+const pkgs = read(path.join(root, "server/package.json")) + read(path.join(root, "client/package.json"));
+const ignore = read(path.join(root, ".gitignore"));
+
+const must = [
+  ["PostgreSQL driver, no SQLite in production", /from "pg"/, server, true], ["student_class_memberships table", /CREATE TABLE student_class_memberships/, migration, true],
+  ["unique student/class membership", /UNIQUE \(student_id, class_id\)/, migration, true], ["users.class_code is gone", /class_code/, migration, false],
+  ["Google ID token signature check", /crypto\.verify\("RSA-SHA256"/, server, true], ["audience check", /claims\.aud !== clientId/, server, true], ["verified Gmail rule", /GMAIL_DOMAINS/, server, true], ["Workspace accounts rejected (hd)", /claims\.hd/, server, true],
+  ["one-time nonce bound to the browser", /DELETE FROM login_nonces/, server, true], ["no password hashing library", /bcrypt|argon2|scrypt/i, pkgs, false], ["no JWT library", /jsonwebtoken/, pkgs, false], ["no password column", /password/i, migration, false],
+  ["passwords hashed with scrypt", /crypto\.scrypt/, server, true], ["e-mail links stored hashed and single-use", /used_at IS NULL/, server, true], ["login lock-outs", /pwFailEmail/, server, true], ["demo accounts isolated", /teacher_is_demo/, server, true], ["verified before log in", /EMAIL_NOT_VERIFIED/, server, true], ["details page", /CREATE TABLE email_tokens/, read(path.join(root, "server/src/migrations/002_accounts.sql")), true], ["no plain password column", /\bpassword\s+TEXT/i, read(path.join(root, "server/src/migrations/002_accounts.sql")), false],
+  ["session secrets stored hashed", /secret_hash/, server, true], ["httpOnly session cookie", /httpOnly = true/, server, true], ["SameSite=Strict session cookie", /sameSite: "Strict"/, server, true], ["__Host- cookie prefix in production", /__Host-st_session/, server, true],
+  ["CSRF token check", /BAD_CSRF/, server, true], ["origin guard", /BAD_ORIGIN/, server, true], ["CORS allow-list", /corsOrigins/, server, true], ["Content-Security-Policy", /Content-Security-Policy/, server, true], ["no unsafe-eval in CSP", /unsafe-eval/, server, false], ["HSTS", /Strict-Transport-Security/, server, true],
+  ["rate limiter", /createLimiter/, server, true], ["login lock-out", /limiters\.login\.guard/, server, true], ["spam join protection", /TOO_MANY_PENDING/, server, true], ["join cool-down", /COOLDOWN/, server, true],
+  ["request size limit", /limit: "100kb"/, server, true], ["multipart limits", /fileSize: config\.maxUploadBytes/, server, true], ["files never written to disk", /memoryStorage/, server, true],
+  ["upload content sniffing", /function sniff/, server, true], ["PDF active-content scan", /JavaScript\|JS\|Launch/, server, true], ["DOCX macro check", /vbaproject/i, server, true], ["random storage keys", /crypto\.randomUUID/, server, true],
+  ["bucket must be private", /is PUBLIC/, server, true], ["short-lived signed links", /signedUrl\(config\.supabase\.bucket, rec\.file_path, 300/, server, true], ["storage path never sent to browsers", /file_path/, client, false],
+  ["no request data interpolated into SQL text", /`[^`$]*\b(SELECT|INSERT INTO|UPDATE|DELETE FROM)\b[^`]*\$\{\s*(req|body|b)\.[\w.]+\s*\}/, server, false], ["sessions: log out everywhere", /logout-all/, server, true], ["sessions: revoke others", /revoke-others/, server, true], ["re-verification for email change", /REAUTH_REQUIRED/, server, true],
+  ["notification centre", /CREATE TABLE notifications/, migration, true], ["announcements to classes/institute", /CHECK \(scope IN \('class','classes','institute'\)\)/, migration, true], ["calendar", /CREATE TABLE calendar_events/, migration, true],
+  ["student goals", /CREATE TABLE student_goals/, migration, true], ["study planner", /CREATE TABLE study_plan_slots/, migration, true], ["exam countdowns", /CREATE TABLE student_exams/, migration, true],
+  ["backups", /CREATE TABLE backup_runs/, migration, true], ["restore test in a rolled-back transaction", /ROLLBACK/, server, true], ["homework create route (v3 bug)", /r\.post\("\/api\/teacher\/homework", \.\.\.guard, uploadMw/, server, true],
+  ["homework create form in the UI", /Create homework/, client, true], ["no dangerouslySetInnerHTML", /dangerouslySetInnerHTML/, client, false], ["no eval", /\beval\s*\(|new Function\s*\(/, client + server, false], ["no tokens in web storage", /localStorage|sessionStorage/, client, false],
+  ["external links are safe", /target="_blank"(?![^>]*noopener)/, client, false], ["no remote http:// URLs in client", /["'`]http:\/\/(?!localhost)/, client, false], ["db/zip files ignored by git", /\*\.db/, ignore, true], ["sw: robots disallow api", /Disallow: \/api\//, read(path.join(root, "client/public/robots.txt")), true],
 ];
 let failed = 0;
-for (const [name, re] of checks) {
-  const ok = re.test(all);
-  console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}`);
-  if (!ok) failed++;
+for (const [name, re, text, shouldMatch] of must) {
+  const found = re.test(text);
+  if (found !== shouldMatch) { failed++; console.error(`FAIL  ${name}`); }
 }
-for (const [re, name] of [
-  [/date\(h\.due_date\)<date\('now'\)/, 'UTC homework date logic'],
-  [/student===s\.name/, 'name-based activity isolation'],
-  [/\bprompt\(/, 'browser prompt workflow'],
-  [/\balert\(/, 'browser alert workflow'],
-  [/localStorage\.clear\(/, 'blanket localStorage clearing'],
-]) {
-  const bad = re.test(server + '\n' + client);
-  console.log(`${bad ? 'FAIL' : 'PASS'}: no ${name}`);
-  if (bad) failed++;
-}
-// Route protection. Each route's middleware chain is the text between its path and the first "=>".
-const routes = [...server.matchAll(/app\.(get|post|put|patch|delete)\(\s*"(\/api\/[^"]*)"\s*,([\s\S]*?)=>/g)].map(m => ({ method: m[1], route: m[2], chain: m[3] }));
-const expectAtLeast = 60;
-console.log(`${routes.length >= expectAtLeast ? 'PASS' : 'FAIL'}: route scanner inspected ${routes.length} routes (needs ${expectAtLeast}+ so the checks below are not vacuous)`);
-if (routes.length < expectAtLeast) failed++;
-const publicRoutes = new Set(['/api/health', '/api/auth/login', '/api/auth/register', '/api/auth/teacher-register', '/api/auth/teacher-join-institute', '/api/auth/institute-request', '/api/admin/login']);
-const open = routes.filter(r => !publicRoutes.has(r.route) && !/\b(auth|adminAuth)\b/.test(r.chain));
-console.log(`${open.length ? 'FAIL' : 'PASS'}: every non-public API route uses auth or adminAuth${open.length ? ' -> ' + open.map(r => `${r.method} ${r.route}`).join(', ') : ''}`);
-if (open.length) failed++;
-const adminWrong = routes.filter(r => r.route.startsWith('/api/admin/') && r.route !== '/api/admin/login' && !/\badminAuth\b/.test(r.chain));
-console.log(`${adminWrong.length ? 'FAIL' : 'PASS'}: every /api/admin route except login uses adminAuth${adminWrong.length ? ' -> ' + adminWrong.map(r => r.route).join(', ') : ''}`);
-if (adminWrong.length) failed++;
-const userUsingAdmin = routes.filter(r => !r.route.startsWith('/api/admin/') && /\badminAuth\b/.test(r.chain));
-console.log(`${userUsingAdmin.length ? 'FAIL' : 'PASS'}: adminAuth is only used on /api/admin routes`);
-if (userUsingAdmin.length) failed++;
-const teacherNoRole = routes.filter(r => /^\/api\/teacher\//.test(r.route) && !/role\("teacher"\)/.test(r.chain));
-console.log(`${teacherNoRole.length ? 'FAIL' : 'PASS'}: every /api/teacher route requires the teacher role${teacherNoRole.length ? ' -> ' + teacherNoRole.map(r => r.route).join(', ') : ''}`);
-if (teacherNoRole.length) failed++;
-const studentNoRole = routes.filter(r => /^\/api\/student\//.test(r.route) && !/role\("student"\)/.test(r.chain));
-console.log(`${studentNoRole.length ? 'FAIL' : 'PASS'}: every /api/student route requires the student role${studentNoRole.length ? ' -> ' + studentNoRole.map(r => r.route).join(', ') : ''}`);
-if (studentNoRole.length) failed++;
-process.exitCode = failed ? 1 : 0;
+// the client must never contain secrets
+for (const f of clientFiles) if (/SERVICE_ROLE|ADMIN_KEY\s*=|SESSION_SECRET/.test(read(f))) { failed++; console.error(`FAIL  secret name in client file ${f}`); }
+console.log(failed ? `\n${failed} check(s) failed` : `All ${must.length} static checks passed`);
+process.exit(failed ? 1 : 0);

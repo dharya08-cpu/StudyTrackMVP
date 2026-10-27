@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { adminApi, adminSession, json } from "./api.js";
-import { CopyChip, ErrorBox, Loading, Modal, formatBytes, formatDate } from "./ui.jsx";
+import { adminApi, setAdminCsrf, json } from "./api.js";
+import { CopyChip, ErrorBox, Loading, Modal, formatBytes, formatDate, timeAgo } from "./ui.jsx";
 
 const STATUS_CLASS = { pending: "in-progress", active: "completed", suspended: "late", banned: "late", rejected: "pending" };
 const FILTERS = ["all", "pending", "active", "suspended", "banned", "rejected", "independent"];
 
 export function AdminApp() {
-  const [authed, setAuthed] = useState(adminSession.has());
+  const [authed, setAuthed] = useState(null);   // null = checking the cookie session
   const [notice, setNotice] = useState("");
-  const signOut = useCallback((text = "") => { adminSession.clear(); setNotice(text); setAuthed(false); }, []);
+  useEffect(() => { adminApi("/admin/session").then(d => { setAdminCsrf(d.csrfToken); setAuthed(true); }).catch(() => setAuthed(false)); }, []);
+  const signOut = useCallback((text = "") => { adminApi("/admin/logout", { method: "POST", body: "{}" }).catch(() => {}); setAdminCsrf(null); setNotice(text); setAuthed(false); }, []);
+  if (authed === null) return <Loading />;
   if (!authed) return <AdminLogin notice={notice} onLogin={() => { setNotice(""); setAuthed(true); }} />;
   return <AdminPanel signOut={signOut} />;
 }
@@ -19,7 +21,7 @@ function AdminLogin({ onLogin, notice }) {
   const [busy, setBusy] = useState(false);
   const submit = async e => {
     e.preventDefault(); setError(""); setBusy(true);
-    try { const d = await adminApi("/admin/login", { method: "POST", body: json({ key }) }); adminSession.set(d.token); onLogin(); }
+    try { const d = await adminApi("/admin/login", { method: "POST", body: json({ key }) }); setAdminCsrf(d.csrfToken); onLogin(); }
     catch (err) { setError(err.message); } finally { setBusy(false); }
   };
   return (
@@ -55,7 +57,7 @@ function AdminPanel({ signOut }) {
   const [openId, setOpenId] = useState(null);
   const [version, setVersion] = useState(0);
   const refreshAll = () => setVersion(v => v + 1);
-  const tabs = ["overview", "institutes", "classes", "teachers", "activity"];
+  const tabs = ["overview", "institutes", "classes", "teachers", "demo", "backups", "security", "activity"];
   return (
     <div className="app">
       <header>
@@ -68,6 +70,9 @@ function AdminPanel({ signOut }) {
         {tab === "institutes" && <Institutes key={version} signOut={signOut} openInstitute={setOpenId} />}
         {tab === "classes" && <Classes key={version} signOut={signOut} />}
         {tab === "teachers" && <Teachers key={version} signOut={signOut} />}
+        {tab === "demo" && <Demo key={version} signOut={signOut} />}
+        {tab === "backups" && <Backups key={version} signOut={signOut} />}
+        {tab === "security" && <SecurityEvents key={version} signOut={signOut} />}
         {tab === "activity" && <Activity key={version} signOut={signOut} />}
       </main>
       {openId && <InstituteDetail id={openId} signOut={signOut} onClose={() => setOpenId(null)} onChanged={refreshAll} />}
@@ -89,9 +94,10 @@ function Overview({ signOut, openInstitute, goInstitutes }) {
         <Stat2 label="Suspended / banned" value={`${o.institutes.suspended} / ${o.institutes.banned}`} sub={`${o.institutes.independent} independent`} />
         <Stat2 label="Teachers / students" value={`${o.teachers} / ${o.students}`} sub={`${o.classes} classes${o.suspended_classes ? `, ${o.suspended_classes} paused` : ""}`} />
       </div>
-      <div className="grid three">
+      <div className="grid four">
         <Stat2 label="File storage used" value={formatBytes(o.storage_bytes)} sub="Homework and test attachments" />
-        <Stat2 label="Database size" value={formatBytes(o.database_bytes)} sub="SQLite file on the server" />
+        <Stat2 label="Signed-in sessions" value={o.active_sessions} sub="Across all devices" />
+        <Stat2 label="Database size" value={formatBytes(o.database_bytes)} sub="PostgreSQL database" />
       </div>
       <section className="panel">
         <div className="panel-head"><h2>Approval queue</h2><button className="secondary" onClick={goInstitutes}>All institutes</button></div>
@@ -279,7 +285,7 @@ function InstituteDetail({ id, signOut, onClose, onChanged }) {
       {dialog?.type === "independent" && <ActionDialog title="Make this institute independent?" confirmLabel="Make independent" typeToConfirm="INDEPENDENT" onClose={() => setDialog(null)} onConfirm={() => run(() => adminApi(`/admin/institutes/${id}/control`, { method: "PATCH", body: json({ mode: "independent" }) }), "Institute is now independent.")}><p>Use this after payment. Every limit, pause and read-only setting is cleared. This panel can no longer suspend, ban, limit or delete this institute unless you return it to managed control.</p></ActionDialog>}
       {dialog?.type === "managed" && <ActionDialog title="Return to managed control?" confirmLabel="Return to managed" onClose={() => setDialog(null)} onConfirm={() => run(() => adminApi(`/admin/institutes/${id}/control`, { method: "PATCH", body: json({ mode: "managed" }) }), "Back under your control.")}><p>You'll be able to suspend, limit and delete this institute again.</p></ActionDialog>}
       {dialog?.type === "delete" && <ActionDialog title="Delete institute only?" confirmLabel="Delete institute" danger typeToConfirm="DELETE" onClose={() => setDialog(null)} onConfirm={async () => { await adminApi(`/admin/institutes/${id}`, { method: "DELETE" }); onChanged(); onClose(); }}><p>The institute and its code are removed. Its teachers keep their accounts, classes and student data as independent teachers.</p></ActionDialog>}
-      {dialog?.type === "delete-data" && <ActionDialog title="Delete everything?" confirmLabel="Delete institute and data" danger typeToConfirm="DELETE ALL" onClose={() => setDialog(null)} onConfirm={async () => { await adminApi(`/admin/institutes/${id}?withData=true`, { method: "DELETE" }); onChanged(); onClose(); }}><p className="warning-text">This permanently deletes the institute, all of its teacher accounts, their classes, homework, tests and uploaded files. Students stay registered but lose their class. This can't be undone.</p></ActionDialog>}
+      {dialog?.type === "delete-data" && <ActionDialog title="Delete everything?" confirmLabel="Delete institute and data" danger typeToConfirm="DELETE ALL" onClose={() => setDialog(null)} onConfirm={async () => { await adminApi(`/admin/institutes/${id}?withData=true`, { method: "DELETE" }); onChanged(); onClose(); }}><p className="warning-text">This permanently deletes the institute, all of its teacher accounts, their classes, homework, tests and uploaded files. Students stay registered but lose these classes. This can't be undone.</p></ActionDialog>}
     </Modal>
   );
 }
@@ -360,5 +366,87 @@ function Activity({ signOut }) {
           <tbody>{data.log.map(l => <tr key={l.id}><td>{formatDate(l.created_at)}</td><td><span className="badge">{l.action}</span></td><td>{l.target_type}: {l.target_label}</td><td>{l.detail}</td></tr>)}</tbody></table></div>
       )}
     </section>
+  );
+}
+
+
+function Backups({ signOut }) {
+  const { data, error, load } = useAdminData("/admin/backups", signOut);
+  const [busy, setBusy] = useState(""), [message, setMessage] = useState(""), [actionError, setActionError] = useState("");
+  if (!data) return error ? <ErrorBox error={error} /> : <Loading />;
+  const act = async (key, fn, text) => {
+    setBusy(key); setMessage(""); setActionError("");
+    try { const r = await fn(); if (r.ok === false) setActionError(r.error || "That did not work."); else setMessage(text(r)); await load(); }
+    catch (e) { if (e.status === 401) signOut("Your admin session ended. Sign in again."); else setActionError(e.message); }
+    finally { setBusy(""); }
+  };
+  const badge = r => r.status === "ok" ? "completed" : r.status === "failed" ? "late" : "in-progress";
+  const verifyBadge = r => r.verify_status === "ok" ? "completed" : r.verify_status === "failed" ? "late" : "pending";
+  return (
+    <>
+      <div className="grid four">
+        <Stat2 label="Automatic backups" value={data.enabled ? "On" : "Off"} sub={data.enabled ? "Daily + weekly" : "Set BACKUP_ENABLED=true and configure Supabase"} />
+        <Stat2 label="Last daily backup" value={data.last_daily ? timeAgo(data.last_daily) : "Never"} />
+        <Stat2 label="Last weekly backup" value={data.last_weekly ? timeAgo(data.last_weekly) : "Never"} />
+        <Stat2 label="Last restore test passed" value={data.last_verified ? timeAgo(data.last_verified) : "Never"} sub={data.last_verified ? "Backups are proven restorable" : "A backup that was never restored is not trustworthy"} />
+      </div>
+      {data.stale && <p className="warning-text">No successful backup in the last 36 hours. Run one now and check the server logs.</p>}
+      <section className="panel">
+        <div className="panel-head"><div><h2>Backups</h2><p className="muted">Daily and weekly snapshots are stored in a private Supabase bucket. Each weekly backup is automatically test-restored.</p></div>
+          <button className="primary" disabled={Boolean(busy)} onClick={() => act("run", () => adminApi("/admin/backups/run", { method: "POST", body: "{}" }), r => `Backup #${r.id} created (${formatBytes(r.size_bytes)}).`)}>{busy === "run" ? "Backing up…" : "Back up now"}</button></div>
+        {message && <p className="success" role="status">{message}</p>}<ErrorBox error={actionError} />
+        {data.runs.length === 0 ? <div className="empty">No backups yet.</div> : (
+          <div className="table-wrap"><table><thead><tr><th>#</th><th>Type</th><th>When</th><th>Size</th><th>Status</th><th>Restore test</th><th /></tr></thead>
+            <tbody>{data.runs.map(r => (
+              <tr key={r.id} className="static-row">
+                <td>{r.id}</td><td>{r.kind}</td><td>{formatDate(r.started_at)}</td><td>{r.size_bytes ? formatBytes(r.size_bytes) : "—"}</td>
+                <td><span className={`badge ${badge(r)}`}>{r.status}</span>{r.error && <small>{r.error}</small>}</td>
+                <td><span className={`badge ${verifyBadge(r)}`}>{r.verify_status}</span>{r.verified_at && <small>{formatDate(r.verified_at)}</small>}{r.verify_status === "failed" && <small>{r.verify_detail}</small>}</td>
+                <td>{r.status === "ok" && <button className="secondary small-btn" disabled={Boolean(busy)} onClick={() => act(`v${r.id}`, () => adminApi(`/admin/backups/${r.id}/verify`, { method: "POST", body: "{}" }), x => `Backup #${r.id} was restored into a temporary schema and matched (${x.total_rows} rows). Nothing live was touched.`)}>{busy === `v${r.id}` ? "Testing…" : "Test restore"}</button>}</td>
+              </tr>))}</tbody></table></div>
+        )}
+      </section>
+      <section className="panel"><h2>Recovery</h2><p className="muted">To restore after a disaster, follow <b>docs/RECOVERY.md</b> in the repository: create a fresh Supabase project, run <code>npm run restore -- --id N --target-url ... --confirm</code> and point DATABASE_URL at it.</p></section>
+    </>
+  );
+}
+
+function SecurityEvents({ signOut }) {
+  const { data, error } = useAdminData("/admin/security-events", signOut);
+  if (!data) return error ? <ErrorBox error={error} /> : <Loading />;
+  return (
+    <section className="panel">
+      <div className="panel-head"><div><h2>Security events</h2><p className="muted">Failed sign-ins, rejected uploads, session changes. Network addresses are masked.</p></div></div>
+      {data.events.length === 0 ? <div className="empty">Nothing to report.</div> : (
+        <div className="table-wrap"><table><thead><tr><th>When</th><th>Event</th><th>User</th><th>Network</th><th>Detail</th></tr></thead>
+          <tbody>{data.events.map(e => <tr key={e.id} className="static-row"><td>{formatDate(e.created_at)}</td><td><span className={`badge ${/failed|rejected/.test(e.type) ? "late" : ""}`}>{e.type}</span></td><td>{e.user_id ?? "—"}</td><td>{e.ip_masked}</td><td className="wrap">{e.detail}</td></tr>)}</tbody></table></div>
+      )}
+    </section>
+  );
+}
+
+
+function Demo({ signOut }) {
+  const { data, error, load } = useAdminData("/admin/demo", signOut);
+  const [busy, setBusy] = useState(false), [message, setMessage] = useState(""), [actionError, setActionError] = useState("");
+  if (!data) return error ? <ErrorBox error={error} /> : <Loading />;
+  const reset = async () => {
+    setBusy(true); setMessage(""); setActionError("");
+    try { const r = await adminApi("/admin/demo/reset", { method: "POST", body: "{}" }); setMessage(`Demo data ready: ${r.users} accounts, ${r.classes} classes, ${r.study_logs} study logs, ${r.worksheets} worksheets.`); await load(); }
+    catch (e) { if (e.status === 401) signOut("Your admin session ended. Sign in again."); else setActionError(e.message); }
+    finally { setBusy(false); }
+  };
+  return (
+    <>
+      <section className="panel">
+        <div className="panel-head"><div><h2>Demo accounts</h2><p className="muted">Five ready-made accounts with live data in every feature, to show StudyTrack to real teachers. Demo and real accounts never mix.</p></div>
+          <button className="primary" disabled={busy || !data.enabled} onClick={reset}>{busy ? "Working…" : data.exists ? "Reset demo data" : "Create demo data"}</button></div>
+        {!data.enabled && <p className="warning-text">Demo mode is OFF. Add the environment variable <b>ALLOW_DEMO=true</b> on the server and redeploy.</p>}
+        {message && <p className="success" role="status">{message}</p>}<ErrorBox error={actionError} />
+        <div className="table-wrap"><table><thead><tr><th>Login (Gmail)</th><th>Password</th><th>Role</th><th>Shows</th></tr></thead>
+          <tbody>{data.accounts.map(a => <tr key={a.email} className="static-row"><td>{a.email}</td><td><code>{a.password}</code></td><td>{a.role}</td><td className="wrap">{a.name}: {a.note}</td></tr>)}</tbody></table></div>
+        <p className="hint">Class codes: {data.classes.map(c => `${c.code} (${c.name})`).join(", ")}. Institute code: {data.institute}. Status: {data.exists ? `${data.exists} demo accounts exist` : "not created yet"}. These passwords are public by design: anyone who knows them can see the demo, so never put real data in demo accounts. Reset restores everything.</p>
+      </section>
+    </>
   );
 }
