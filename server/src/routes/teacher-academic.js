@@ -4,14 +4,17 @@ import { classForReq, assertClassActive } from "../classctx.js";
 import { studentsForClass, studentForTeacher, inList, notify } from "../repo.js";
 import { trend, pct, minutesToHours } from "../dates.js";
 import { buildActivity } from "../activity.js";
-import { inspectRequestFile, assertStorageQuota, putFile, removeFiles, requireStorage } from "../uploads.js";
+import { weekTrend } from "../weektrend.js";
+import { inspectRequestFile, inspectRequestFiles, requestFiles, assertStorageQuota, putFile, removeFiles, requireStorage } from "../uploads.js";
+import { withAttachments, addAttachment, countAttachments, pathsFor, attachmentWithOwner, submissionFilesFor, submissionPathsForHomework, isBeyondLimit, parentColumn, MAX_ATTACHMENTS_PER_ITEM } from "../attachments.js";
 
 const STATUS = ["not-started", "in-progress", "completed"];
 
 export function teacherAcademicRoutes(ctx, r) {
   const { db, clock, auth, role, limiters, uploadMw } = ctx;
   const guard = [auth, role("teacher")];
-  const uploadGuard = (req, res, next) => (req.file ? limiters.upload.guard(req, res, next) : next());
+  const uploadMany = uploadMw.many || uploadMw; // creating homework/tests: up to 5 files at once
+  const uploadGuard = (req, res, next) => (requestFiles(req).length ? limiters.upload.guard(req, res, next) : next());
 
   const filterDates = query => {
     const from = v.optDate(query.from, "Start date"), to = v.optDate(query.to, "End date");
@@ -22,32 +25,32 @@ export function teacherAcademicRoutes(ctx, r) {
   const lateCount = (subs, due) => (due ? subs.filter(s => s.submitted_at && clock.localDate(new Date(s.submitted_at)) > due).length : 0);
 
   async function homeworkForClass(classId) {
-    const rows = await db.many(`SELECT h.id,h.class_id,h.title,h.description,h.due_date,h.file_name,h.file_size,(h.file_path IS NOT NULL) AS has_file,h.created_at
-      FROM homework h WHERE h.class_id=$1 ORDER BY h.created_at DESC,h.id DESC`, [classId]);
+    const rows = await withAttachments(db, "homework", await db.many(`SELECT h.id,h.class_id,h.title,h.description,h.due_date,h.created_at
+      FROM homework h WHERE h.class_id=$1 ORDER BY h.created_at DESC,h.id DESC`, [classId]));
     const subs = await db.many(`SELECT hs.homework_id,hs.student_id,hs.status,hs.submitted_at FROM homework_submissions hs
       JOIN homework h ON h.id=hs.homework_id JOIN student_class_memberships m ON m.student_id=hs.student_id AND m.class_id=h.class_id AND m.status='active' WHERE h.class_id=$1`, [classId]);
     const by = new Map();
     for (const s of subs) { if (!by.has(s.homework_id)) by.set(s.homework_id, []); by.get(s.homework_id).push(s); }
     return rows.map(h => {
       const list = by.get(h.id) || [];
-      return { ...h, has_file: Boolean(h.has_file), submitted_count: list.length, reviewed_count: list.filter(s => s.status === "reviewed").length, late_count: lateCount(list, h.due_date) };
+      return { ...h, submitted_count: list.length, reviewed_count: list.filter(s => s.status === "reviewed").length, late_count: lateCount(list, h.due_date) };
     });
   }
   async function testResultsForClass(classId) {
-    const tests = await db.many(`SELECT t.id,t.class_id,t.title,t.subject,t.max_marks,t.test_date,t.created_at,t.file_name,(t.file_path IS NOT NULL) AS has_file
-      FROM tests t WHERE t.class_id=$1 ORDER BY CASE WHEN t.test_date IS NULL THEN 1 ELSE 0 END,t.test_date DESC,t.created_at DESC`, [classId]);
+    const tests = await withAttachments(db, "tests", await db.many(`SELECT t.id,t.class_id,t.title,t.subject,t.max_marks,t.test_date,t.created_at
+      FROM tests t WHERE t.class_id=$1 ORDER BY CASE WHEN t.test_date IS NULL THEN 1 ELSE 0 END,t.test_date DESC,t.created_at DESC`, [classId]));
     const marks = await db.many(`SELECT m.test_id,m.marks FROM marks m JOIN tests t ON t.id=m.test_id JOIN student_class_memberships mm ON mm.student_id=m.student_id AND mm.class_id=t.class_id AND mm.status='active' WHERE t.class_id=$1`, [classId]);
     return tests.map(t => {
       const own = marks.filter(m => m.test_id === t.id);
       const avg = own.length ? own.reduce((a, m) => a + m.marks * 100 / t.max_marks, 0) / own.length : null;
-      return { ...t, has_file: Boolean(t.has_file), result_count: own.length, average_percentage: avg == null ? null : Number(avg.toFixed(1)) };
+      return { ...t, result_count: own.length, average_percentage: avg == null ? null : Number(avg.toFixed(1)) };
     });
   }
 
   r.get("/api/teacher/overview", ...guard, async (req, res) => {
     const cls = await classForReq(db, req, { required: false });
     if (!cls) return res.json({ class: null, students: [], homework: [], tests: [], metrics: {}, studentSummary: [], activity: [] });
-    const today = clock.today(), weekStart = clock.startOfWeek(), prevStart = clock.previousWeekStart();
+    const today = clock.today(), weekStart = clock.startOfWeek(), prevStart = clock.previousWeekStart(), elapsed = clock.weekday(today) - 1, prevEnd = clock.shift(prevStart, elapsed);
     const students = await studentsForClass(db, cls.id);
     const homework = await homeworkForClass(cls.id), tests = await testResultsForClass(cls.id);
     const memberJoin = "JOIN student_class_memberships m ON m.student_id=s.student_id AND m.class_id=$1 AND m.status='active'";
@@ -60,22 +63,23 @@ export function teacherAcademicRoutes(ctx, r) {
     const study = await db.many(`SELECT s.student_id,
       SUM(CASE WHEN s.study_date=$2 THEN s.minutes ELSE 0 END) AS today,
       SUM(CASE WHEN s.study_date>=$3 THEN s.minutes ELSE 0 END) AS week,
-      SUM(CASE WHEN s.study_date>=$4 AND s.study_date<$3 THEN s.minutes ELSE 0 END) AS prevweek
-      FROM study_logs s ${memberJoin} WHERE s.study_date>=$4 GROUP BY s.student_id`, [cls.id, today, weekStart, prevStart]);
+      SUM(CASE WHEN s.study_date>=$3 AND s.study_date<$2 THEN s.minutes ELSE 0 END) AS weekdone,
+      SUM(CASE WHEN s.study_date>=$4 AND s.study_date<$5 THEN s.minutes ELSE 0 END) AS prevdone
+      FROM study_logs s ${memberJoin} WHERE s.study_date>=$4 GROUP BY s.student_id`, [cls.id, today, weekStart, prevStart, prevEnd]);
     const scores = await db.many("SELECT m.student_id,m.marks,t.max_marks,t.test_date,t.created_at,t.id AS test_id FROM marks m JOIN tests t ON t.id=m.test_id WHERE t.class_id=$1", [cls.id]);
     const submitted = await db.many("SELECT hs.student_id,COUNT(*) AS n FROM homework_submissions hs JOIN homework h ON h.id=hs.homework_id WHERE h.class_id=$1 GROUP BY hs.student_id", [cls.id]);
     const studentSummary = students.map(s => {
-      const st = study.find(x => x.student_id === s.id) || { today: 0, week: 0, prevweek: 0 };
+      const st = study.find(x => x.student_id === s.id) || { today: 0, week: 0, weekdone: 0, prevdone: 0 };
       const own = scores.filter(x => x.student_id === s.id).sort((a, b) => String(b.test_date || b.created_at).localeCompare(String(a.test_date || a.created_at)) || b.test_id - a.test_id);
       const avg = own.length ? own.reduce((a, x) => a + x.marks * 100 / x.max_marks, 0) / own.length : 0;
       const latest = own.length ? Number((own[0].marks * 100 / own[0].max_marks).toFixed(1)) : null;
       const hwSubmitted = submitted.find(x => x.student_id === s.id)?.n || 0;
       const rate = homework.length ? hwSubmitted / homework.length : 1;
-      const studyTrend = trend(st.week, st.prevweek);
+      const studyTrend = elapsed ? trend(st.weekdone, st.prevdone) : "stable";
       let status = "on-track";
       if (st.week === 0 || (studyTrend === "declining" && avg < 60) || rate < 0.5) status = "needs-attention";
       if ((st.week === 0 && avg < 50) || (studyTrend === "declining" && avg < 45) || rate < 0.25) status = "at-risk";
-      return { ...s, today_hours: minutesToHours(st.today), week_hours: minutesToHours(st.week), prevweek_hours: minutesToHours(st.prevweek), study_trend: studyTrend, average_percentage: avg.toFixed(1), latest_percentage: latest, homework_total: homework.length, homework_submitted: hwSubmitted, status };
+      return { ...s, today_hours: minutesToHours(st.today), week_hours: minutesToHours(st.week), prevweek_hours: minutesToHours(st.prevdone), study_trend: studyTrend, average_percentage: avg.toFixed(1), latest_percentage: latest, homework_total: homework.length, homework_submitted: hwSubmitted, status };
     });
     res.json({
       class: cls, students, homework, tests,
@@ -108,14 +112,14 @@ export function teacherAcademicRoutes(ctx, r) {
     const where = conditions.join(" AND ");
     const logs = await db.many(`SELECT * FROM study_logs WHERE ${where} ORDER BY study_date DESC,id DESC LIMIT 1000`, params);
     const thisWeek = (await db.one("SELECT COALESCE(SUM(minutes),0) AS n FROM study_logs WHERE student_id=$1 AND study_date>=$2", [s.id, clock.startOfWeek()])).n;
-    const prevWeek = (await db.one("SELECT COALESCE(SUM(minutes),0) AS n FROM study_logs WHERE student_id=$1 AND study_date>=$2 AND study_date<$3", [s.id, clock.previousWeekStart(), clock.startOfWeek()])).n;
+    const tw = await weekTrend(db, clock, s.id);
     res.json({
       student: s, logs,
       daily: await db.many(`SELECT study_date,SUM(minutes) AS minutes FROM study_logs WHERE ${where} GROUP BY study_date ORDER BY study_date`, params),
       subjects: await db.many(`SELECT subject,SUM(minutes) AS minutes FROM study_logs WHERE ${where} GROUP BY subject ORDER BY SUM(minutes) DESC,subject`, params),
       categories: await db.many(`SELECT category,SUM(minutes) AS minutes FROM study_logs WHERE ${where} GROUP BY category`, params),
-      total_minutes: logs.reduce((a, x) => a + x.minutes, 0), this_week_minutes: thisWeek, previous_week_minutes: prevWeek, trend: trend(thisWeek, prevWeek),
-      change_percentage: prevWeek ? Number(((thisWeek - prevWeek) * 100 / prevWeek).toFixed(1)) : null, filters: { from, to, subject, category },
+      total_minutes: logs.reduce((a, x) => a + x.minutes, 0), this_week_minutes: thisWeek, previous_week_minutes: tw.previous, trend: tw.trend,
+      change_percentage: tw.previous ? Number(((tw.current - tw.previous) * 100 / tw.previous).toFixed(1)) : null, filters: { from, to, subject, category },
     });
   });
 
@@ -127,7 +131,7 @@ export function teacherAcademicRoutes(ctx, r) {
     const avg = scores.length ? scores.reduce((a, x) => a + x.percentage, 0) / scores.length : 0;
     const first = scores[0]?.percentage || 0, last = scores.at(-1)?.percentage || 0;
     const week = (await db.one("SELECT COALESCE(SUM(minutes),0) AS n FROM study_logs WHERE student_id=$1 AND study_date>=$2", [s.id, clock.startOfWeek()])).n;
-    const prevWeek = (await db.one("SELECT COALESCE(SUM(minutes),0) AS n FROM study_logs WHERE student_id=$1 AND study_date>=$2 AND study_date<$3", [s.id, clock.previousWeekStart(), clock.startOfWeek()])).n;
+    const tw = await weekTrend(db, clock, s.id);
     // Weekly comparison is grouped in JavaScript so weeks follow the school time zone, not the database's.
     const logs = await db.many("SELECT study_date,minutes FROM study_logs WHERE student_id=$1", [s.id]);
     const byWeek = new Map();
@@ -139,7 +143,7 @@ export function teacherAcademicRoutes(ctx, r) {
     const syl = await db.one("SELECT COUNT(*) AS total,COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed FROM syllabus_chapters WHERE class_id=$1", [classId]);
     res.json({
       student: s, scores, study, averagePercentage: Number(avg.toFixed(1)), improvementPercentage: Number((last - first).toFixed(1)), latestPercentage: scores.at(-1)?.percentage ?? null,
-      studyHours: minutesToHours(study.reduce((a, x) => a + x.minutes, 0)), weekStudyHours: minutesToHours(week), previousWeekStudyHours: minutesToHours(prevWeek), studyTrend: trend(week, prevWeek),
+      studyHours: minutesToHours(study.reduce((a, x) => a + x.minutes, 0)), weekStudyHours: minutesToHours(week), previousWeekStudyHours: minutesToHours(tw.previous), studyTrend: tw.trend,
       performanceTrend: scores.length > 1 ? trend(last, first) : "stable", attendancePercentage: att.total ? Number((att.present * 100 / att.total).toFixed(1)) : 0,
       syllabusPercentage: syl.total ? Math.round(syl.completed * 100 / syl.total) : 0, weeklyComparison,
     });
@@ -147,9 +151,10 @@ export function teacherAcademicRoutes(ctx, r) {
 
   r.get("/api/teacher/student/:id/homework", ...guard, async (req, res) => {
     const { s, classId } = await studentFor(req);
-    const rows = await db.many(`SELECT h.id,h.title,h.description,h.due_date,h.file_name,(h.file_path IS NOT NULL) AS has_file,h.created_at,hs.note,hs.submitted_at,hs.status,hs.feedback,hs.reviewed_at
+    const rows = await db.many(`SELECT h.id,h.title,h.description,h.due_date,h.created_at,hs.id AS submission_id,hs.note,hs.submitted_at,hs.status,hs.feedback,hs.reviewed_at
       FROM homework h LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=$1 WHERE h.class_id=$2 ORDER BY h.created_at DESC`, [s.id, classId]);
-    res.json({ student: s, homework: rows.map(h => ({ ...h, has_file: Boolean(h.has_file) })) });
+    const theirFiles = await submissionFilesFor(db, rows.map(x => x.submission_id).filter(Boolean));
+    res.json({ student: s, homework: (await withAttachments(db, "homework", rows)).map(h => ({ ...h, my_files: theirFiles.get(h.submission_id) || [] })) });
   });
 
   // ---- Homework ----
@@ -163,8 +168,10 @@ export function teacherAcademicRoutes(ctx, r) {
     const students = await studentsForClass(db, h.class_id);
     const rows = await db.many("SELECT * FROM homework_submissions WHERE homework_id=$1", [h.id]);
     const map = new Map(rows.map(x => [x.student_id, x]));
-    const { file_path, ...home } = h;
-    res.json({ homework: { ...home, has_file: Boolean(file_path) }, submissions: students.map(s => ({ student: s, ...(map.get(s.id) || {}), status: map.get(s.id)?.status || (h.due_date && clock.today() > h.due_date ? "late" : "pending") })) });
+    const { file_path, file_name, file_size, file_type, ...home } = h; // the pre-V6 single-file columns are not used any more
+    const [withFiles] = await withAttachments(db, "homework", [home]);
+    const theirFiles = await submissionFilesFor(db, rows.map(x => x.id)); // files the students uploaded with their work
+    res.json({ homework: withFiles, submissions: students.map(s => ({ student: s, ...(map.get(s.id) || {}), files: theirFiles.get(map.get(s.id)?.id) || [], status: map.get(s.id)?.status || (h.due_date && clock.today() > h.due_date ? "late" : "pending") })) });
   });
   r.post("/api/teacher/homework/:id/review", ...guard, async (req, res) => {
     const h = await ownedHomework(req.params.id, req.user.id);
@@ -183,9 +190,9 @@ export function teacherAcademicRoutes(ctx, r) {
     return raw === undefined || raw === null || raw === "" ? null : v.idList(raw, "Classes", { min: 1, max: 10 });
   }
 
-  // THE V3 BUG: v3 had no way to create homework from the teacher screen. This route creates homework (text, due date,
-  // optional PDF/JPG/PNG/DOCX file) for one or several classes in a single request.
-  r.post("/api/teacher/homework", ...guard, uploadMw, uploadGuard, async (req, res) => {
+  // Creates homework (text, due date, up to 5 PDF/JPG/PNG/DOCX files) for one or several classes in a single request.
+  // Each class gets its own stored copy of every file, so deleting it from one class never affects another.
+  r.post("/api/teacher/homework", ...guard, uploadMany, uploadGuard, async (req, res) => {
     const title = v.str(req.body?.title, "Title", { max: 200 });
     const description = v.optStr(req.body?.description, "Description", { max: 5000, multiline: true });
     const dueDate = v.optDate(req.body?.dueDate, "Due date");
@@ -197,21 +204,18 @@ export function teacherAcademicRoutes(ctx, r) {
       if (classes.length !== ids.length) throw new HttpError(404, "Class not found");
     } else classes = [await classForReq(db, req)];
     classes.forEach(c => assertClassActive({ suspended: Boolean(c.suspended) }));
-    let info = null;
-    if (req.file) {
-      requireStorage(ctx);
-      info = await inspectRequestFile(ctx, req);
-      await assertStorageQuota(ctx, req.user, info.size * classes.length);
-    }
+    if (requestFiles(req).length) requireStorage(ctx);
+    const files = await inspectRequestFiles(ctx, req);
+    if (files.length) await assertStorageQuota(ctx, req.user, files.reduce((n, x) => n + x.info.size, 0) * classes.length);
     const uploaded = [];
     try {
-      for (const c of classes) uploaded.push(info ? await putFile(ctx, req.user, { classId: c.id, kind: "homework", info, buffer: req.file.buffer }) : null);
+      for (const c of classes) for (const f of files) uploaded.push({ classId: c.id, info: f.info, path: await putFile(ctx, req.user, { classId: c.id, kind: "homework", info: f.info, buffer: f.file.buffer }) });
       const created = await db.tx(async t => {
         const out = [];
-        for (let i = 0; i < classes.length; i++) {
-          const row = await t.one(`INSERT INTO homework(teacher_id,class_id,title,description,due_date,file_path,file_name,file_size,file_type,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-            [req.user.id, classes[i].id, title, description, dueDate, uploaded[i], info?.displayName ?? null, info?.size ?? 0, info?.mime ?? null, clock.nowIso()]);
-          out.push({ id: row.id, class_id: classes[i].id, class_name: classes[i].name });
+        for (const c of classes) {
+          const row = await t.one(`INSERT INTO homework(teacher_id,class_id,title,description,due_date,created_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, [req.user.id, c.id, title, description, dueDate, clock.nowIso()]);
+          for (const u of uploaded.filter(x => x.classId === c.id)) await addAttachment(t, { kind: "homework", parentId: row.id, classId: c.id, userId: req.user.id, path: u.path, info: u.info, now: clock.nowIso() });
+          out.push({ id: row.id, class_id: c.id, class_name: c.name });
         }
         return out;
       });
@@ -219,33 +223,50 @@ export function teacherAcademicRoutes(ctx, r) {
         const students = (await studentsForClass(db, c.class_id)).map(s => s.id);
         await notify(db, clock, students, { type: "homework", title: `New homework: ${title}`, body: dueDate ? `Due ${dueDate}` : "", classId: c.class_id, refType: "homework", refId: c.id });
       }
-      res.status(201).json({ created, fileName: info?.displayName ?? null });
+      res.status(201).json({ created, fileName: files[0]?.info.displayName ?? null, fileNames: files.map(f => f.info.displayName) });
     } catch (error) {
-      await removeFiles(ctx, uploaded);
+      await removeFiles(ctx, uploaded.map(u => u.path));
       throw error;
     }
   });
 
-  async function attach(req, res, table) {
-    const row = await db.one(`SELECT x.id,x.class_id,x.file_path,x.file_size,c.suspended FROM ${table} x JOIN classes c ON c.id=x.class_id WHERE x.id=$1 AND c.teacher_id=$2`, [v.id(req.params.id), req.user.id]);
-    if (!row) throw new HttpError(404, table === "homework" ? "Homework not found" : "Test not found");
+  // Adds ONE more file to an existing homework or test. Nothing is replaced: every earlier file stays viewable.
+  async function attach(req, res, kind) {
+    const row = await db.one(`SELECT x.id,x.class_id,c.suspended FROM ${kind} x JOIN classes c ON c.id=x.class_id WHERE x.id=$1 AND c.teacher_id=$2`, [v.id(req.params.id), req.user.id]);
+    if (!row) throw new HttpError(404, kind === "homework" ? "Homework not found" : "Test not found");
     assertClassActive({ suspended: Boolean(row.suspended) });
     requireStorage(ctx);
     const info = await inspectRequestFile(ctx, req);
-    await assertStorageQuota(ctx, req.user, info.size, row.file_size || 0);
-    const path = await putFile(ctx, req.user, { classId: row.class_id, kind: table, info, buffer: req.file.buffer });
-    try { await db.exec(`UPDATE ${table} SET file_path=$1,file_name=$2,file_size=$3,file_type=$4 WHERE id=$5`, [path, info.displayName, info.size, info.mime, row.id]); }
+    if (await countAttachments(db, kind, row.id) >= MAX_ATTACHMENTS_PER_ITEM) throw new HttpError(400, `Up to ${MAX_ATTACHMENTS_PER_ITEM} files can be attached to one item. Remove one first.`, "TOO_MANY_FILES");
+    await assertStorageQuota(ctx, req.user, info.size);
+    const path = await putFile(ctx, req.user, { classId: row.class_id, kind, info, buffer: req.file.buffer });
+    let attachment;
+    try { attachment = await addAttachment(db, { kind, parentId: row.id, classId: row.class_id, userId: req.user.id, path, info, now: clock.nowIso() }); }
     catch (error) { await removeFiles(ctx, [path]); throw error; }
-    if (row.file_path && row.file_path !== path) await removeFiles(ctx, [row.file_path]);
-    res.status(201).json({ fileName: info.displayName });
+    if (await isBeyondLimit(db, "attachments", parentColumn(kind), row.id, attachment.id, MAX_ATTACHMENTS_PER_ITEM)) { // several uploads at the same moment
+      await db.exec("DELETE FROM attachments WHERE id=$1", [attachment.id]); await removeFiles(ctx, [path]);
+      throw new HttpError(400, `Up to ${MAX_ATTACHMENTS_PER_ITEM} files can be attached to one item. Remove one first.`, "TOO_MANY_FILES");
+    }
+    res.status(201).json({ fileName: info.displayName, attachment });
   }
   r.post("/api/teacher/homework/:id/attach", ...guard, uploadMw, uploadGuard, (req, res) => attach(req, res, "homework"));
   r.post("/api/teacher/tests/:id/attach", ...guard, uploadMw, uploadGuard, (req, res) => attach(req, res, "tests"));
 
+  // Removes one file from a homework or test (the item and its other files stay).
+  r.delete("/api/teacher/attachments/:id", ...guard, async (req, res) => {
+    const a = await attachmentWithOwner(db, v.id(req.params.id, "file"));
+    if (!a || a.teacher_id !== req.user.id) throw new HttpError(404, "File not found"); // unknown and "not yours" look the same
+    assertClassActive({ suspended: Boolean(a.suspended) });
+    await db.exec("DELETE FROM attachments WHERE id=$1", [a.id]);
+    await removeFiles(ctx, [a.file_path]);
+    res.json({ ok: true });
+  });
+
   r.delete("/api/teacher/homework/:id", ...guard, async (req, res) => {
     const h = await ownedHomework(req.params.id, req.user.id);
+    const paths = [...await pathsFor(db, "homework", [h.id]), ...await submissionPathsForHomework(db, [h.id])]; // read before the rows go; the stored files are removed afterwards
     await db.exec("DELETE FROM homework WHERE id=$1", [h.id]);
-    await removeFiles(ctx, [h.file_path]);
+    await removeFiles(ctx, paths);
     res.json({ ok: true });
   });
 
@@ -268,7 +289,7 @@ export function teacherAcademicRoutes(ctx, r) {
     res.json({ class: cls, students: results, tests: (await testResultsForClass(cls.id)).filter(inRange), filters: { subject, from, to } });
   });
 
-  r.post("/api/teacher/tests", ...guard, uploadMw, uploadGuard, async (req, res) => {
+  r.post("/api/teacher/tests", ...guard, uploadMany, uploadGuard, async (req, res) => {
     const cls = await classForReq(db, req);
     assertClassActive(cls);
     const b = req.body || {};
@@ -276,13 +297,20 @@ export function teacherAcademicRoutes(ctx, r) {
     const maxMarks = v.int(b.maxMarks, "Max marks", { min: 1, max: 100000 });
     const solution = v.optStr(b.solution, "Solution notes", { max: 10000, multiline: true });
     const testDate = v.optDate(b.testDate, "Test date");
-    let info = null, path = null;
-    if (req.file) { requireStorage(ctx); info = await inspectRequestFile(ctx, req); await assertStorageQuota(ctx, req.user, info.size); path = await putFile(ctx, req.user, { classId: cls.id, kind: "tests", info, buffer: req.file.buffer }); }
+    if (requestFiles(req).length) requireStorage(ctx);
+    const files = await inspectRequestFiles(ctx, req);
+    if (files.length) await assertStorageQuota(ctx, req.user, files.reduce((n, x) => n + x.info.size, 0));
+    const stored = [];
     let row;
     try {
-      row = await db.one(`INSERT INTO tests(teacher_id,class_id,title,subject,max_marks,solution,test_date,file_path,file_name,file_size,file_type,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,title,subject,max_marks,test_date`,
-        [req.user.id, cls.id, title, subject, maxMarks, solution, testDate, path, info?.displayName ?? null, info?.size ?? 0, info?.mime ?? null, clock.nowIso()]);
-    } catch (error) { await removeFiles(ctx, [path]); throw error; }
+      for (const f of files) stored.push({ info: f.info, path: await putFile(ctx, req.user, { classId: cls.id, kind: "tests", info: f.info, buffer: f.file.buffer }) });
+      row = await db.tx(async t => {
+        const created = await t.one(`INSERT INTO tests(teacher_id,class_id,title,subject,max_marks,solution,test_date,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,title,subject,max_marks,test_date`,
+          [req.user.id, cls.id, title, subject, maxMarks, solution, testDate, clock.nowIso()]);
+        for (const u of stored) await addAttachment(t, { kind: "tests", parentId: created.id, classId: cls.id, userId: req.user.id, path: u.path, info: u.info, now: clock.nowIso() });
+        return created;
+      });
+    } catch (error) { await removeFiles(ctx, stored.map(u => u.path)); throw error; }
     const students = (await studentsForClass(db, cls.id)).map(s => s.id);
     await notify(db, clock, students, { type: "test", title: `New test: ${title}`, body: testDate ? `${subject} · ${testDate}` : subject, classId: cls.id, refType: "test", refId: row.id });
     res.status(201).json(row);

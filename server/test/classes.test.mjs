@@ -119,11 +119,12 @@ test("HOMEWORK (v3 bug fixed): teacher creates homework with text only, and with
     const r = await t.post("/api/teacher/homework", { title: `With ${name}`, dueDate: "2026-10-15" }, { file: upload(buf, name, mime) });
     assert.equal(r.status, 201, `${name}: ${JSON.stringify(r.body)}`); assert.equal(r.body.fileName, name);
   }
-  const rows = await app.db.many("SELECT title,file_path,file_name,file_size,file_type FROM homework ORDER BY id");
-  assert.equal(rows.length, 4); assert.equal(rows[0].file_path, null);
-  assert.ok(rows.slice(1).every(r => /^t\d+\/c\d+\/homework\/[0-9a-f-]{36}\.(pdf|png|docx)$/.test(r.file_path)), "random stored names");
+  assert.equal((await app.db.one("SELECT COUNT(*) AS n FROM homework")).n, 4);
+  const rows = await app.db.many("SELECT a.file_path,a.file_name,a.file_type FROM attachments a ORDER BY a.id");
+  assert.equal(rows.length, 3);
+  assert.ok(rows.every(r => /^t\d+\/c\d+\/homework\/[0-9a-f-]{36}\.(pdf|png|docx)$/.test(r.file_path)), "random stored names");
   assert.equal(app.storage.buckets.get("studytrack-files").size, 3);
-  assert.equal(rows[1].file_type, "application/pdf");
+  assert.equal(rows[0].file_type, "application/pdf");
   const dash = (await s.get("/api/student/dashboard")).body.homework;
   assert.equal(dash.length, 4); assert.ok(dash.filter(h => h.has_file).length === 3);
   assert.equal(JSON.stringify(dash).includes("file_path"), false, "storage keys never reach the browser");
@@ -158,7 +159,7 @@ test("one homework posted to several classes at once, each with its own stored c
   const a = await mkClass(t, "A"), b = await mkClass(t, "B"), c = await mkClass(t, "C"), foreign = await mkClass(other, "F");
   const r = await t.post("/api/teacher/homework", { title: "Shared", classIds: JSON.stringify([a.id, b.id]) }, { file: upload(makePdf(), "s.pdf", "application/pdf") });
   assert.equal(r.status, 201); assert.deepEqual(r.body.created.map(x => x.class_id).sort(), [a.id, b.id].sort());
-  const paths = (await app.db.many("SELECT file_path FROM homework")).map(x => x.file_path); assert.equal(new Set(paths).size, 2);
+  const paths = (await app.db.many("SELECT file_path FROM attachments")).map(x => x.file_path); assert.equal(new Set(paths).size, 2);
   assert.equal((await t.post("/api/teacher/homework", { title: "Sneaky", classIds: [a.id, foreign.id] })).status, 404, "cannot post into another teacher's class");
   assert.equal((await app.db.one("SELECT COUNT(*) AS n FROM homework WHERE title='Sneaky'")).n, 0);
   assert.equal((await t.post("/api/teacher/homework", { title: "Too many", classIds: Array.from({ length: 11 }, (_, i) => i + 1) })).status, 400);
@@ -193,16 +194,15 @@ test("file downloads: only members of the owning class (or its teacher) get a sh
   const hwB = (await tB.post("/api/teacher/homework", { title: "x" }, { headers: { "x-class-id": String(clsB.id) } })).status; assert.equal(hwB, 403);
 });
 
-test("attach replaces the old file and cleans storage; bad attach keeps the old one", async () => {
+test("attach ADDS a file (nothing is replaced); a bad attach changes nothing", async () => {
   const app = await createTestApp(); const t = await mkTeacher(app, 1); await mkClass(t, "P");
   const id = (await t.post("/api/teacher/homework", { title: "H" }, { file: upload(makePdf(), "one.pdf", "application/pdf") })).body.created[0].id;
-  const before = (await app.db.one("SELECT file_path FROM homework WHERE id=$1", [id])).file_path;
   assert.equal((await t.post(`/api/teacher/homework/${id}/attach`, {}, { file: upload(makePng(), "two.png", "image/png") })).status, 201);
-  const after = await app.db.one("SELECT file_path,file_name FROM homework WHERE id=$1", [id]);
-  assert.notEqual(after.file_path, before); assert.equal(after.file_name, "two.png");
-  const bucket = app.storage.buckets.get("studytrack-files"); assert.equal(bucket.size, 1); assert.ok(bucket.has(after.file_path));
+  const names = (await app.db.many("SELECT file_name FROM attachments WHERE homework_id=$1 ORDER BY id", [id])).map(x => x.file_name);
+  assert.deepEqual(names, ["one.pdf", "two.png"], "the first file is still there");
+  assert.equal(app.storage.buckets.get("studytrack-files").size, 2);
   assert.equal((await t.post(`/api/teacher/homework/${id}/attach`, {}, { file: upload(Buffer.from("MZ"), "x.exe") })).status, 415);
-  assert.equal((await app.db.one("SELECT file_path FROM homework WHERE id=$1", [id])).file_path, after.file_path);
+  assert.equal((await app.db.one("SELECT COUNT(*) AS n FROM attachments")).n, 2);
   assert.equal((await t.post(`/api/teacher/homework/${id}/attach`, {})).status, 400, "file required");
   const stranger = await mkTeacher(app, 2); await mkClass(stranger, "Q");
   assert.equal((await stranger.post(`/api/teacher/homework/${id}/attach`, {}, { file: upload(makePdf(), "a.pdf") })).status, 404);

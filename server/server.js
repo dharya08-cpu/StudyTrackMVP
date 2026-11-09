@@ -1,4 +1,5 @@
-// StudyTrack V4 server entry point.
+// StudyTrack V6 server entry point.
+import "./src/threadpool.js"; // must be first: sets the worker-thread count before anything uses it
 import { loadConfig } from "./src/config.js";
 import { createDb } from "./src/db.js";
 import { applyMigrations } from "./src/migrate.js";
@@ -9,6 +10,7 @@ import { createBackupService } from "./src/backup.js";
 import { createExpressApp } from "./src/app.js";
 import { makeUploadMw } from "./src/upload-middleware.js";
 import { purgeExpired } from "./src/sessions.js";
+import { seedDemo } from "./src/demo.js";
 
 process.on("unhandledRejection", reason => console.error("Unhandled rejection:", reason));
 
@@ -36,11 +38,13 @@ async function main() {
   ctx.backups = createBackupService({ db, storage, config, clock });
   const app = await createExpressApp(ctx);
 
-  const server = app.listen(config.port, () => console.log(`StudyTrack V4 listening on ${config.port} (${config.nodeEnv})`));
+  const server = app.listen(config.port, () => console.log(`StudyTrack V6 listening on ${config.port} (${config.nodeEnv})`));
   server.requestTimeout = 60_000;
   server.headersTimeout = 20_000;
   server.keepAliveTimeout = 65_000;
   ctx.backups.start();
+  if (config.allowDemo && !(await db.one("SELECT 1 AS x FROM users WHERE is_demo=TRUE"))) seedDemo(ctx).then(r => console.log(`Demo accounts created (${r.users} accounts, ${r.classes} classes).`)).catch(e => console.error("Demo seeding failed:", e.message));
+  else if (config.allowDemo) console.log("Demo accounts are enabled.");
   const maintenance = setInterval(() => purgeExpired(db, clock).catch(e => console.error("Maintenance failed:", e.message)), 60 * 60_000);
   maintenance.unref();
   purgeExpired(db, clock).catch(() => {});

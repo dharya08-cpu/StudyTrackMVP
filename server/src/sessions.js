@@ -107,6 +107,7 @@ export async function purgeExpired(db, clock) {
   await db.exec("DELETE FROM sessions WHERE expires_at<$1 OR (revoked_at IS NOT NULL AND revoked_at<$2)", [now, cutoff]);
   await db.exec("DELETE FROM security_events WHERE created_at<$1", [new Date(clock.now().getTime() - 90 * 86400000).toISOString()]);
   await db.exec("DELETE FROM notifications WHERE created_at<$1", [new Date(clock.now().getTime() - 120 * 86400000).toISOString()]);
+  await db.exec("DELETE FROM reminders_sent WHERE sent_at<$1", [new Date(clock.now().getTime() - 30 * 86400000).toISOString()]);
 }
 
 // ---- Owner admin sessions: HMAC-signed, short-lived, separate from user sessions -----------------------------

@@ -4,13 +4,18 @@ import zlib from "node:zlib";
 import crypto from "node:crypto";
 import { applyMigrations, latestMigrationVersion } from "./migrate.js";
 import { isUniqueViolation } from "./repo.js";
+import { backfillLegacyFiles } from "./attachments.js";
 
 // Parents first (restore order). Sessions, login nonces and security events are deliberately NOT backed up.
 export const BACKUP_TABLES = [
   "institutes", "users", "classes", "student_class_memberships", "join_requests", "teacher_blocks", "homework", "homework_submissions",
   "tests", "marks", "study_logs", "attendance", "syllabus_chapters", "admin_log", "notifications", "announcements", "announcement_targets",
   "class_schedule", "calendar_events", "calendar_event_targets", "student_goals", "study_plan_slots", "student_exams",
+  "attachments", "student_plan_items", // V6
+  "submission_files", "parent_links", "known_devices", "reminders_sent", // V6 features
 ];
+// Backups made before V6 do not list these tables; they restore as empty (and old single files become attachments).
+const ADDED_IN_V6 = new Set(["attachments", "student_plan_items", "submission_files", "parent_links", "known_devices", "reminders_sent"]);
 const SERIAL_TABLES = new Set(BACKUP_TABLES.filter(t => !["announcement_targets", "calendar_event_targets", "student_goals"].includes(t)));
 const COLUMN = /^[a-z_][a-z0-9_]*$/;
 const sha = data => crypto.createHash("sha256").update(data).digest("hex");
@@ -55,6 +60,7 @@ export function parseSnapshot(buffer, expectedSha256 = null) {
   }
   for (const t of BACKUP_TABLES) {
     const m = manifest.tables[t];
+    if (!m && ADDED_IN_V6.has(t) && !rows[t].length) continue; // an older backup that predates this table
     if (!m || m.rows !== rows[t].length || m.sha256 !== hashes[t].digest("hex")) throw new Error(`Backup integrity check failed for table ${t}`);
   }
   return { manifest, rows };
@@ -78,10 +84,13 @@ export async function restoreSnapshot(buffer, target, { expectedSha256 = null, w
         await t.exec(`INSERT INTO ${table}(${cols.join(",")}) VALUES ${values.join(",")}`, params);
       }
     }
+    const predatesAttachments = !manifest.tables.attachments;
+    if (predatesAttachments) await backfillLegacyFiles(t);
     await resetSequences(t);
     for (const table of BACKUP_TABLES) {
       const n = (await t.one(`SELECT COUNT(*) AS n FROM ${table}`)).n;
-      if (n !== manifest.tables[table].rows) throw new Error(`Row count mismatch after restore in ${table}: expected ${manifest.tables[table].rows}, found ${n}`);
+      const expected = manifest.tables[table]?.rows ?? 0;
+      if (n !== expected && !(predatesAttachments && table === "attachments")) throw new Error(`Row count mismatch after restore in ${table}: expected ${expected}, found ${n}`);
     }
   });
   return { tables: Object.fromEntries(BACKUP_TABLES.map(t => [t, rows[t].length])), total: BACKUP_TABLES.reduce((s, t) => s + rows[t].length, 0), manifest };

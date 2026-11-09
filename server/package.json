@@ -1,6 +1,6 @@
 {
   "name": "studytrack-server",
-  "version": "4.0.0",
+  "version": "6.0.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,9 @@
     "backup": "node scripts/backup.mjs",
     "backup:verify": "node scripts/verify-backup.mjs",
     "restore": "node scripts/restore.mjs",
-    "import:sqlite": "node scripts/import-sqlite.mjs"
+    "import:sqlite": "node scripts/import-sqlite.mjs",
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "test:scale": "node --test test/scale.test.mjs test/scale-http.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.109.0",

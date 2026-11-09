@@ -4,6 +4,7 @@ import { safeEqual, serializeCookie } from "../security.js";
 import { signAdminToken, adminCsrfFor } from "../sessions.js";
 import { adminCookieName } from "../auth.js";
 import { instituteUsage, inList, notify } from "../repo.js";
+import { seedDemo, demoStatus } from "../demo.js";
 
 export function adminRoutes(ctx, r) {
   const { db, config, clock, adminAuth, limiters } = ctx;
@@ -18,9 +19,9 @@ export function adminRoutes(ctx, r) {
     }
   }
   async function filePaths(where, params) {
-    const hw = await db.many(`SELECT h.file_path AS p FROM homework h JOIN classes c ON c.id=h.class_id WHERE ${where} AND h.file_path IS NOT NULL`, params);
-    const ts = await db.many(`SELECT x.file_path AS p FROM tests x JOIN classes c ON c.id=x.class_id WHERE ${where} AND x.file_path IS NOT NULL`, params);
-    return [...hw, ...ts].map(x => x.p);
+    const own = await db.many(`SELECT a.file_path AS p FROM attachments a JOIN classes c ON c.id=a.class_id WHERE ${where}`, params);
+    const students = await db.many(`SELECT f.file_path AS p FROM submission_files f JOIN classes c ON c.id=f.class_id WHERE ${where}`, params);
+    return [...own, ...students].map(x => x.p);
   }
   async function instituteRow(inst) {
     const head = inst.head_id ? await db.one("SELECT name,email FROM users WHERE id=$1", [inst.head_id]) : null;
@@ -63,7 +64,7 @@ export function adminRoutes(ctx, r) {
       teachers: await n("SELECT COUNT(*) AS n FROM users WHERE role='teacher'"), students: await n("SELECT COUNT(*) AS n FROM users WHERE role='student'"),
       classes: await n("SELECT COUNT(*) AS n FROM classes"), suspended_classes: await n("SELECT COUNT(*) AS n FROM classes WHERE suspended=TRUE"),
       active_sessions: await n("SELECT COUNT(*) AS n FROM sessions WHERE revoked_at IS NULL AND expires_at>$1", [clock.nowIso()]),
-      storage_bytes: (await n("SELECT COALESCE(SUM(file_size),0) AS n FROM homework")) + (await n("SELECT COALESCE(SUM(file_size),0) AS n FROM tests")),
+      storage_bytes: (await n("SELECT COALESCE(SUM(file_size),0) AS n FROM attachments")) + (await n("SELECT COALESCE(SUM(file_size),0) AS n FROM submission_files")),
       database_bytes: db.dialect === "postgres" ? await n("SELECT pg_database_size(current_database()) AS n") : 0,
     });
   });
@@ -141,11 +142,7 @@ export function adminRoutes(ctx, r) {
       if (withData && teacherIds.length) {
         const p = [];
         const marks = inList(p, teacherIds);
-        paths = await (async () => {
-          const hw = await t.many(`SELECT h.file_path AS p FROM homework h JOIN classes c ON c.id=h.class_id WHERE c.teacher_id IN (${marks}) AND h.file_path IS NOT NULL`, p);
-          const ts = await t.many(`SELECT x.file_path AS p FROM tests x JOIN classes c ON c.id=x.class_id WHERE c.teacher_id IN (${marks}) AND x.file_path IS NOT NULL`, p);
-          return [...hw, ...ts].map(x => x.p);
-        })();
+        paths = [...await t.many(`SELECT a.file_path AS p FROM attachments a JOIN classes c ON c.id=a.class_id WHERE c.teacher_id IN (${marks})`, p), ...await t.many(`SELECT f.file_path AS p FROM submission_files f JOIN classes c ON c.id=f.class_id WHERE c.teacher_id IN (${marks})`, p)].map(x => x.p);
         await t.exec(`DELETE FROM users WHERE id IN (${marks})`, p);
       } else await t.exec("UPDATE users SET institute_id=NULL,institute_role=NULL,institute_note='' WHERE institute_id=$1", [inst.id]);
       await t.exec("DELETE FROM institutes WHERE id=$1", [inst.id]);
@@ -159,7 +156,7 @@ export function adminRoutes(ctx, r) {
     const rows = await db.many(`SELECT c.id,c.name,c.code,c.suspended,c.suspend_reason,c.created_at,t.id AS teacher_id,t.name AS teacher_name,t.email AS teacher_email,t.banned AS teacher_banned,
       i.id AS institute_id,i.name AS institute_name,i.code AS institute_code,i.control_mode,
       (SELECT COUNT(*) FROM student_class_memberships m WHERE m.class_id=c.id AND m.status='active') AS student_count,
-      (SELECT COALESCE(SUM(h.file_size),0) FROM homework h WHERE h.class_id=c.id) + (SELECT COALESCE(SUM(x.file_size),0) FROM tests x WHERE x.class_id=c.id) AS storage_bytes
+      (SELECT COALESCE(SUM(a.file_size),0) FROM attachments a WHERE a.class_id=c.id) + (SELECT COALESCE(SUM(f.file_size),0) FROM submission_files f WHERE f.class_id=c.id) AS storage_bytes
       FROM classes c JOIN users t ON t.id=c.teacher_id LEFT JOIN institutes i ON i.id=t.institute_id ORDER BY c.id DESC`);
     res.json({ classes: rows.map(x => ({ ...x, suspended: Boolean(x.suspended), teacher_banned: Boolean(x.teacher_banned) })) });
   });
@@ -203,6 +200,14 @@ export function adminRoutes(ctx, r) {
     if (action === "ban") await db.exec("UPDATE sessions SET revoked_at=$1,revoked_reason='banned' WHERE user_id=$2 AND revoked_at IS NULL", [clock.nowIso(), teacher.id]);
     await logAdmin(action, "teacher", teacher.id, `${teacher.name} <${teacher.email}>`, reason);
     res.json({ ok: true });
+  });
+
+  // ---- Demo accounts (for showing StudyTrack to real teachers) ----
+  r.get("/api/admin/demo", adminAuth, async (req, res) => res.json({ enabled: config.allowDemo, ...(await demoStatus(db)) }));
+  r.post("/api/admin/demo/reset", adminAuth, async (req, res) => {
+    const out = await seedDemo(ctx);
+    await logAdmin("demo-reset", "demo", null, "demo accounts", `${out.users} accounts, ${out.classes} classes`);
+    res.status(201).json(out);
   });
 
   // ---- Backups: list, run now, test-restore ----

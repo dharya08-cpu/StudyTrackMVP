@@ -1,10 +1,9 @@
 // Teacher: classes, join requests, blocks, removing students, weekly class schedule.
-import crypto from "node:crypto";
 import { HttpError, v } from "../validate.js";
 import { classForReq, assertClassActive } from "../classctx.js";
-import { getInstitute, instituteEnforced, studentCountFor, instituteSummaryFor, notify, isUniqueViolation, codeInUse, generateUniqueCode, studentForTeacher } from "../repo.js";
+import { getInstitute, instituteEnforced, studentCountFor, instituteSummaryFor, notify, studentForTeacher } from "../repo.js";
+import { createClassFor } from "../joins.js";
 
-const MAX_CLASSES_PER_TEACHER = 30;
 const MAX_SLOTS_PER_CLASS = 40;
 
 export function teacherClassRoutes(ctx, r) {
@@ -22,18 +21,7 @@ export function teacherClassRoutes(ctx, r) {
   });
 
   r.post("/api/teacher/classes", ...guard, async (req, res) => {
-    const name = v.str(req.body?.name, "Class name", { min: 1, max: 100 });
-    let code = v.code(req.body?.code, "Class code", { optional: true });
-    if ((await db.one("SELECT COUNT(*) AS n FROM classes WHERE teacher_id=$1", [req.user.id])).n >= MAX_CLASSES_PER_TEACHER) throw new HttpError(403, `You can create up to ${MAX_CLASSES_PER_TEACHER} classes.`, "CLASS_LIMIT");
-    if (code && await codeInUse(db, code)) throw new HttpError(409, "That class code is already taken. Choose another or leave it blank to generate one.");
-    if (!code) code = await generateUniqueCode(db, crypto.randomInt);
-    try {
-      const row = await db.one("INSERT INTO classes(teacher_id,name,code,created_at) VALUES($1,$2,$3,$4) RETURNING id", [req.user.id, name, code, clock.nowIso()]);
-      res.status(201).json({ id: row.id, name, code, suspended: false, student_count: 0, pending_requests: 0 });
-    } catch (error) {
-      if (isUniqueViolation(error)) throw new HttpError(409, "That class code is already taken");
-      throw error;
-    }
+    res.status(201).json(await createClassFor(ctx, req.user, { name: req.body?.name, code: req.body?.code }));
   });
 
   async function requestForTeacher(idParam, teacherId) {

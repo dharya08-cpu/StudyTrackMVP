@@ -2,12 +2,16 @@
 import crypto from "node:crypto";
 import { HttpError, v, cleanText } from "../validate.js";
 import { assertVerifiedGmail } from "../google.js";
+import { noteSignIn } from "../login-alerts.js";
 import { sha256, safeEqual, serializeCookie, csrfTokenFor } from "../security.js";
 import { createSession, listSessions, revokeSession, revokeOtherSessions, revokeAllSessions } from "../sessions.js";
 import { sessionCookieName, nonceCookieName } from "../auth.js";
 import { getInstitute, instituteBlock, isUniqueViolation } from "../repo.js";
 
-export const publicUser = u => ({ id: u.id, name: u.name, email: u.email, role: u.role, institute_id: u.institute_id ?? null, institute_role: u.institute_role ?? null });
+export const publicUser = u => ({
+  id: u.id, name: u.name, email: u.email, role: u.role, institute_id: u.institute_id ?? null, institute_role: u.institute_role ?? null,
+  profile_completed: Boolean(u.profile_completed_at ?? u.profile_completed), is_demo: Boolean(u.is_demo), has_password: Boolean(u.password_hash ?? u.has_password),
+});
 
 export function authRoutes(ctx, r) {
   const { db, config, clock, google, limiters, auth } = ctx;
@@ -31,7 +35,7 @@ export function authRoutes(ctx, r) {
   }
 
   r.get("/api/auth/config", (req, res) => {
-    res.json({ googleClientId: google.enabled ? config.googleClientId : "", googleEnabled: google.enabled });
+    res.json({ googleClientId: google.enabled ? config.googleClientId : "", googleEnabled: google.enabled, passwordEnabled: ctx.mailer.enabled, demoEnabled: config.allowDemo });
   });
 
   r.post("/api/auth/nonce", limiters.nonce.guard, async (req, res) => {
@@ -41,8 +45,10 @@ export function authRoutes(ctx, r) {
     res.json({ nonce });
   });
 
+  // mode "login": the account must already exist. mode "signup" (or a role is given): the account is created if it is new.
   r.post("/api/auth/google", limiters.login.guard, async (req, res) => {
-    const role = v.oneOf(req.body?.role, "Role", ["student", "teacher"]);
+    const mode = req.body?.mode === "login" || (req.body?.mode === undefined && req.body?.role === undefined) ? "login" : "signup";
+    const role = mode === "signup" ? v.oneOf(req.body?.role, "Role", ["student", "teacher"]) : null;
     const identity = await verifyGoogleLogin(req, req.body?.credential);
     let user = await db.one("SELECT * FROM users WHERE google_sub=$1", [identity.sub]);
     if (!user) {
@@ -51,17 +57,20 @@ export function authRoutes(ctx, r) {
     }
     let isNew = false;
     if (user) {
-      if (user.role !== role) throw new HttpError(403, `This Gmail is registered as a ${user.role}. Please use the ${user.role} sign-in.`, "ROLE_MISMATCH");
+      if (role && user.role !== role) throw new HttpError(403, `This Gmail is registered as a ${user.role}. Please use the ${user.role} sign-in.`, "ROLE_MISMATCH");
       if (user.banned) throw new HttpError(403, "This account has been disabled. Please contact StudyTrack support.", "ACCOUNT_BANNED");
       if (user.role === "teacher" && user.institute_id) {
         const block = instituteBlock(await getInstitute(db, user.institute_id), "teacher");
         if (block) throw new HttpError(403, block.message, block.code);
       }
-      await db.exec("UPDATE users SET google_sub=$1,last_login_at=$2 WHERE id=$3", [identity.sub, clock.nowIso(), user.id]);
+      await db.exec("UPDATE users SET google_sub=$1,last_login_at=$2,email_verified=TRUE WHERE id=$3", [identity.sub, clock.nowIso(), user.id]);
+      // A password someone set before this address was proven to be theirs must not survive Google verifying it.
+      if (!user.email_verified) { await db.exec("UPDATE users SET password_hash=NULL WHERE id=$1", [user.id]); user.password_hash = null; }
       // A renamed Gmail address follows the Google account, unless another StudyTrack account already uses it.
       if (user.email !== identity.email) await db.exec("UPDATE users SET email=$1 WHERE id=$2 AND NOT EXISTS (SELECT 1 FROM users u2 WHERE u2.email=$1 AND u2.id<>$2)", [identity.email, user.id]);
       user.google_sub = identity.sub;
     } else {
+      if (mode === "login") throw new HttpError(404, "No StudyTrack account found for this Gmail. Please sign up first.", "NO_ACCOUNT");
       try {
         user = await db.one("INSERT INTO users(google_sub,name,email,role,last_login_at,created_at) VALUES($1,$2,$3,$4,$5,$5) RETURNING *", [identity.sub, identity.name, identity.email, role, clock.nowIso()]);
         isNew = true;
@@ -73,7 +82,8 @@ export function authRoutes(ctx, r) {
     }
     const session = await createSession(db, { userId: user.id, req, clock, config });
     setSession(res, session.cookieValue, session.maxAgeSeconds);
-    await ctx.audit(req, isNew ? "signup" : "login", role, user.id);
+    await ctx.audit(req, isNew ? "signup" : "login", "google", user.id);
+    await noteSignIn(ctx, req, user);
     res.json({ user: publicUser(user), csrfToken: csrfTokenFor(config.sessionSecret, session.id), isNew });
   });
 
@@ -127,6 +137,7 @@ export function authRoutes(ctx, r) {
   });
   // Changing the linked Gmail: the NEW Gmail must prove ownership with its own Google sign-in.
   r.post("/api/account/change-email", auth, ctx.requireRecentReauth, limiters.login.guard, async (req, res) => {
+    if (req.user.is_demo) throw new HttpError(403, "Demo accounts can't change their e-mail.", "DEMO_LOCKED");
     const identity = await verifyGoogleLogin(req, req.body?.credential);
     const me = await db.one("SELECT * FROM users WHERE id=$1", [req.user.id]);
     if (identity.sub === me.google_sub) throw new HttpError(400, "That is already your linked Gmail.");

@@ -31,3 +31,10 @@
 3. Deploy. Tables are created automatically.
 4. Import V3 data (README 4).
 5. Run `TEST_DATABASE_URL=... npm test` against a scratch database, then `npm run backup` and `npm run backup:verify`.
+
+## V4.1 additions
+* Separate **Log in** and **Sign up** pages; Gmail + password (e-mail verified) or Google; forgot / reset / change password.
+* One-time **details page** after sign-up (parent or guardian for students); Google name pre-filled for confirmation.
+* **Demo accounts**: 3 teachers, 2 students, 6 classes, 1 institute, weeks of data (see [docs/DEMO.md](DEMO.md)).
+* Weekly study trend now compares completed days with the same days last week (it used to compare a half week with a whole week).
+* Privacy policy updated for the new data (profile details, parent or guardian, password hashes, e-mail sending).

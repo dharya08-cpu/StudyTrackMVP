@@ -1,14 +1,19 @@
 // Student side: multiple classes, join requests, dashboard, homework, study logs, attendance, syllabus.
 import { HttpError, v } from "../validate.js";
-import { inList, studentClasses, getClassByCode, isActiveMember, notify, isUniqueViolation, getClass } from "../repo.js";
-import { trend, pct } from "../dates.js";
+import { inList, studentClasses, notify, getClass } from "../repo.js";
+import { requestToJoin } from "../joins.js";
+import { pct } from "../dates.js";
+import { weekTrend } from "../weektrend.js";
 import { buildActivity } from "../activity.js";
+import { withAttachments, submissionFilesFor, addSubmissionFile, submissionFileWithOwner, isBeyondLimit, MAX_SUBMISSION_FILES } from "../attachments.js";
+import { inspectRequestFile, assertStorageQuota, putFile, removeFiles, requireStorage } from "../uploads.js";
 
 const DAY = 86400000;
 
 export function studentRoutes(ctx, r) {
-  const { db, clock, auth, role, limiters } = ctx;
+  const { db, clock, auth, role, limiters, uploadMw } = ctx;
   const guard = [auth, role("student")];
+  const uploadGuard = (req, res, next) => (req.file ? limiters.upload.guard(req, res, next) : next());
 
   // Which classes does a request look at? One (must be the student's own and available) or all available ones.
   async function scope(req) {
@@ -45,38 +50,8 @@ export function studentRoutes(ctx, r) {
   });
 
   r.post("/api/student/join-request", ...guard, limiters.joinIp.guard, limiters.join.guard, async (req, res) => {
-    const code = v.code(req.body?.classCode, "Class code");
-    const cls = await getClassByCode(db, code);
-    if (!cls) throw new HttpError(404, "No class found with that code. Check the code with your teacher.");
-    const me = await db.one("SELECT id,name,email FROM users WHERE id=$1", [req.user.id]);
-    if (await db.one("SELECT 1 AS x FROM teacher_blocks WHERE teacher_id=$1 AND (student_email=$2 OR student_id=$3)", [cls.teacher_id, me.email, me.id])) {
-      throw new HttpError(403, `${cls.teacher_name} didn't allow you to join their class.`, "BLOCKED");
-    }
-    if (!cls.available) throw new HttpError(403, "This class isn't accepting students right now.", "CLASS_UNAVAILABLE");
-    if (await isActiveMember(db, me.id, cls.id)) throw new HttpError(409, "You are already in this class.");
-    if (await db.one("SELECT 1 AS x FROM join_requests WHERE student_id=$1 AND class_id=$2 AND status='pending'", [me.id, cls.id])) {
-      throw new HttpError(409, "You already have a pending request for this class.");
-    }
-    // Spam protection: a cool-down after a decline, a cap on open requests and a daily cap.
-    const dayAgo = new Date(clock.now().getTime() - DAY).toISOString();
-    if (await db.one("SELECT 1 AS x FROM join_requests WHERE student_id=$1 AND class_id=$2 AND status='denied' AND resolved_at>=$3", [me.id, cls.id, dayAgo])) {
-      throw new HttpError(429, "Your last request to this class was declined. Please wait 24 hours before asking again.", "COOLDOWN");
-    }
-    if ((await db.one("SELECT COUNT(*) AS n FROM join_requests WHERE student_id=$1 AND status='pending'", [me.id])).n >= 10) {
-      throw new HttpError(429, "You have too many pending requests. Cancel some first.", "TOO_MANY_PENDING");
-    }
-    if ((await db.one("SELECT COUNT(*) AS n FROM join_requests WHERE student_id=$1 AND created_at>=$2", [me.id, dayAgo])).n >= 20) {
-      throw new HttpError(429, "You have sent too many requests today. Please try again tomorrow.", "DAILY_LIMIT");
-    }
-    let id;
-    try {
-      id = (await db.one("INSERT INTO join_requests(student_id,class_id,created_at) VALUES($1,$2,$3) RETURNING id", [me.id, cls.id, clock.nowIso()])).id;
-    } catch (error) {
-      if (isUniqueViolation(error)) throw new HttpError(409, "You already have a pending request for this class.");
-      throw error;
-    }
-    await notify(db, clock, [cls.teacher_id], { type: "join_request", title: `${me.name} wants to join ${cls.name}`, body: "Open Requests to allow or deny.", classId: cls.id, refType: "join_request", refId: id });
-    res.status(201).json({ request: { id, teacherName: cls.teacher_name, className: cls.name } });
+    const request = await requestToJoin(ctx, req.user, req.body?.classCode);
+    res.status(201).json({ request });
   });
 
   r.post("/api/student/join-requests/:id/cancel", ...guard, async (req, res) => {
@@ -98,21 +73,23 @@ export function studentRoutes(ctx, r) {
   // ---- Dashboard ----
   r.get("/api/student/dashboard", ...guard, async (req, res) => {
     const { all, ids } = await scope(req);
-    const today = clock.today(), weekStart = clock.startOfWeek(), prevStart = clock.previousWeekStart();
+    const today = clock.today(), weekStart = clock.startOfWeek();
     const uid = req.user.id;
     let homework = [], tests = [], attendance = { total: 0, present: 0 }, syllabus = { total: 0, completed: 0 };
     if (ids.length) {
       let p = [today, uid];
-      homework = (await db.many(`SELECT h.id,h.class_id,c.name AS class_name,h.title,h.description,h.due_date,h.file_name,h.file_size,(h.file_path IS NOT NULL) AS has_file,h.created_at,
-        hs.note AS submission_note,hs.submitted_at,hs.feedback,hs.reviewed_at,
+      homework = await withAttachments(db, "homework", await db.many(`SELECT h.id,h.class_id,c.name AS class_name,h.title,h.description,h.due_date,h.created_at,
+        hs.id AS submission_id,hs.note AS submission_note,hs.submitted_at,hs.feedback,hs.reviewed_at,
         CASE WHEN hs.status IS NOT NULL THEN hs.status WHEN h.due_date IS NOT NULL AND h.due_date<$1 THEN 'late' ELSE 'pending' END AS status
         FROM homework h JOIN classes c ON c.id=h.class_id LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=$2
-        WHERE h.class_id IN (${inList(p, ids)}) ORDER BY h.created_at DESC`, p)).map(h => ({ ...h, has_file: Boolean(h.has_file) }));
+        WHERE h.class_id IN (${inList(p, ids)}) ORDER BY h.created_at DESC`, p));
+      const mine = await submissionFilesFor(db, homework.map(h => h.submission_id).filter(Boolean)); // the student's own uploaded files
+      homework = homework.map(h => ({ ...h, my_files: h.submission_id ? mine.get(h.submission_id) || [] : [] }));
       p = [uid];
-      tests = (await db.many(`SELECT t.id,t.class_id,c.name AS class_name,t.title,t.subject,t.max_marks,t.solution,t.test_date,t.file_name,(t.file_path IS NOT NULL) AS has_file,t.created_at,m.marks,m.remark
+      tests = (await withAttachments(db, "tests", await db.many(`SELECT t.id,t.class_id,c.name AS class_name,t.title,t.subject,t.max_marks,t.solution,t.test_date,t.created_at,m.marks,m.remark
         FROM tests t JOIN classes c ON c.id=t.class_id LEFT JOIN marks m ON m.test_id=t.id AND m.student_id=$1
-        WHERE t.class_id IN (${inList(p, ids)}) ORDER BY CASE WHEN t.test_date IS NULL THEN 1 ELSE 0 END, t.test_date DESC, t.created_at DESC`, p))
-        .map(t => ({ ...t, has_file: Boolean(t.has_file), percentage: t.marks == null ? null : pct(t.marks, t.max_marks) }));
+        WHERE t.class_id IN (${inList(p, ids)}) ORDER BY CASE WHEN t.test_date IS NULL THEN 1 ELSE 0 END, t.test_date DESC, t.created_at DESC`, p)))
+        .map(t => ({ ...t, percentage: t.marks == null ? null : pct(t.marks, t.max_marks) }));
       p = [uid];
       attendance = await db.one(`SELECT COUNT(*) AS total,COALESCE(SUM(CASE WHEN status='present' THEN 1 ELSE 0 END),0) AS present FROM attendance WHERE student_id=$1 AND class_id IN (${inList(p, ids)})`, p);
       p = [];
@@ -121,7 +98,7 @@ export function studentRoutes(ctx, r) {
     const graded = tests.filter(t => t.marks != null);
     const avg = graded.length ? graded.reduce((a, t) => a + t.percentage, 0) / graded.length : 0;
     const logs = await db.many("SELECT * FROM study_logs WHERE student_id=$1 ORDER BY study_date DESC,id DESC LIMIT 300", [uid]);
-    const week = await sumMinutes(uid, weekStart), prev = await sumMinutes(uid, prevStart, weekStart);
+    const week = await sumMinutes(uid, weekStart), tw = await weekTrend(db, clock, uid);
     res.json({
       student: { id: uid, name: req.user.name, email: req.user.email },
       classes: all.map(c => ({ id: c.id, name: c.name, teacher_name: c.teacher_name, available: c.available, unavailable_reason: c.unavailable_reason })),
@@ -129,7 +106,7 @@ export function studentRoutes(ctx, r) {
       stats: {
         tests_taken: graded.length, average_percentage: Number(avg.toFixed(1)),
         total_study_minutes: (await db.one("SELECT COALESCE(SUM(minutes),0) AS n FROM study_logs WHERE student_id=$1", [uid])).n,
-        week_minutes: week, previous_week_minutes: prev, study_trend: trend(week, prev),
+        week_minutes: week, previous_week_minutes: tw.previous, study_trend: tw.trend,
         attendance_percentage: attendance.total ? Number((attendance.present * 100 / attendance.total).toFixed(1)) : 0,
         syllabus_percentage: syllabus.total ? Math.round(syllabus.completed * 100 / syllabus.total) : 0,
       },
@@ -153,6 +130,45 @@ export function studentRoutes(ctx, r) {
       ON CONFLICT(homework_id,student_id) DO UPDATE SET note=excluded.note,submitted_at=excluded.submitted_at,status=excluded.status`, [h.id, req.user.id, note, status, clock.nowIso()]);
     await notify(db, clock, [cls.teacher_id], { type: "homework_submitted", title: `${req.user.name} submitted homework`, classId: cls.id, refType: "homework", refId: h.id });
     res.json({ ok: true, status });
+  });
+
+  // ---- Files on my own submission (PDF, JPG, PNG, DOCX). Submit first, then add files; locked once the teacher has reviewed it. ----
+  async function ownSubmissionFor(req) {
+    const h = await db.one("SELECT id,class_id FROM homework WHERE id=$1", [v.id(req.params.id, "homework")]);
+    const cls = h && (await studentClasses(db, req.user.id)).find(c => c.id === h.class_id);
+    if (!cls) throw new HttpError(404, "Homework not found");
+    if (!cls.available) throw new HttpError(403, cls.unavailable_reason, "CLASS_UNAVAILABLE");
+    if (cls.read_only) throw new HttpError(403, "This institute is in read-only mode right now.", "READ_ONLY");
+    const sub = await db.one("SELECT id,status FROM homework_submissions WHERE homework_id=$1 AND student_id=$2", [h.id, req.user.id]);
+    if (!sub) throw new HttpError(409, "Submit your homework first, then add your files.", "SUBMIT_FIRST");
+    if (sub.status === "reviewed") throw new HttpError(409, "Your teacher has already reviewed this homework, so it can't be changed.", "ALREADY_REVIEWED");
+    return { cls, sub };
+  }
+  r.post("/api/student/homework/:id/files", ...guard, uploadMw, uploadGuard, async (req, res) => {
+    const { cls, sub } = await ownSubmissionFor(req);
+    requireStorage(ctx);
+    const info = await inspectRequestFile(ctx, req);
+    if ((await db.one("SELECT COUNT(*) AS n FROM submission_files WHERE submission_id=$1", [sub.id])).n >= MAX_SUBMISSION_FILES) throw new HttpError(400, `You can attach up to ${MAX_SUBMISSION_FILES} files to one submission. Remove one first.`, "TOO_MANY_FILES");
+    // Stored under the class teacher's institute, so the institute's storage limit and cleanup cover it.
+    const owner = await db.one("SELECT id,institute_id FROM users WHERE id=$1", [cls.teacher_id]);
+    await assertStorageQuota(ctx, owner, info.size);
+    const path = await putFile(ctx, owner, { classId: cls.id, kind: "submissions", info, buffer: req.file.buffer });
+    let file;
+    try { file = await addSubmissionFile(db, { submissionId: sub.id, classId: cls.id, studentId: req.user.id, path, info, now: clock.nowIso() }); }
+    catch (error) { await removeFiles(ctx, [path]); throw error; }
+    if (await isBeyondLimit(db, "submission_files", "submission_id", sub.id, file.id, MAX_SUBMISSION_FILES)) { // several uploads at the same moment
+      await db.exec("DELETE FROM submission_files WHERE id=$1", [file.id]); await removeFiles(ctx, [path]);
+      throw new HttpError(400, `You can attach up to ${MAX_SUBMISSION_FILES} files to one submission. Remove one first.`, "TOO_MANY_FILES");
+    }
+    res.status(201).json({ file });
+  });
+  r.delete("/api/student/submission-files/:id", ...guard, async (req, res) => {
+    const f = await submissionFileWithOwner(db, v.id(req.params.id, "file"));
+    if (!f || f.student_id !== req.user.id) throw new HttpError(404, "File not found");
+    if (f.status === "reviewed") throw new HttpError(409, "Your teacher has already reviewed this homework, so it can't be changed.", "ALREADY_REVIEWED");
+    await db.exec("DELETE FROM submission_files WHERE id=$1", [f.id]);
+    await removeFiles(ctx, [f.file_path]);
+    res.json({ ok: true });
   });
 
   // ---- Study logs ----

@@ -17,7 +17,7 @@ export function createAuth(ctx) {
   async function auth(req, res, next) {
     const session = await authenticateSession(db, req.cookies?.[sessionCookieName(config)], { clock, config });
     if (!session) throw new HttpError(401, "Please sign in to continue.", "UNAUTHENTICATED");
-    const u = await db.one("SELECT id,name,email,role,institute_id,institute_role,banned FROM users WHERE id=$1", [session.user_id]);
+    const u = await db.one("SELECT id,name,email,role,institute_id,institute_role,banned,is_demo,profile_completed_at,password_hash,reminders_enabled,reminders_checked_at FROM users WHERE id=$1", [session.user_id]);
     if (!u) throw new HttpError(401, "This account no longer exists.", "UNAUTHENTICATED");
     if (UNSAFE(req.method)) {
       const sent = req.get("x-csrf-token");
@@ -32,7 +32,7 @@ export function createAuth(ctx) {
       readOnly = Boolean(inst && inst.control_mode === "managed" && inst.status === "active" && inst.read_only);
       if (readOnly && UNSAFE(req.method)) throw new HttpError(403, "Your institute is in read-only mode right now. Please contact StudyTrack support.", "READ_ONLY");
     }
-    req.user = { id: u.id, name: u.name, email: u.email, role: u.role, institute_id: u.institute_id, institute_role: u.institute_role, readOnly };
+    req.user = { id: u.id, name: u.name, email: u.email, role: u.role, reminders_enabled: Boolean(u.reminders_enabled), reminders_checked_at: u.reminders_checked_at, institute_id: u.institute_id, institute_role: u.institute_role, readOnly, is_demo: Boolean(u.is_demo), profile_completed: Boolean(u.profile_completed_at), has_password: Boolean(u.password_hash) };
     req.session = session;
     await new Promise((resolve, reject) => userLimiter.guard(req, res, e => (e ? reject(e) : resolve())));
     next();

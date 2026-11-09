@@ -3,10 +3,15 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { api, setCsrf, setActiveClass } from "./api.js";
 import { Loading } from "./ui.jsx";
-import { Auth } from "./auth.jsx";
+import { Auth, VerifyPage, ResetPage } from "./auth.jsx";
+import { Onboarding } from "./onboarding.jsx";
 import { TeacherShell } from "./teacher.jsx";
 import { StudentApp } from "./student.jsx";
 import { AdminApp } from "./admin.jsx";
+import { ParentPage } from "./parent.jsx";
+import { applyTheme, readTheme } from "./menu.jsx";
+
+applyTheme(readTheme(), false); // before the first paint, so a dark-mode user never sees a white flash
 
 function BlockedScreen({ message, logout }) {
   return (
@@ -23,8 +28,9 @@ function App() {
   const [booting, setBooting] = useState(true);
   const [blocked, setBlocked] = useState(null);
   const [landing, setLanding] = useState(null);
-  const [role, setRole] = useState("student");
   const [notice, setNotice] = useState("");
+  const [flash, setFlash] = useState("");
+  const path = window.location.pathname;
 
   const reset = useCallback((text = "") => { setCsrf(null); setActiveClass(null); setUser(null); setBlocked(null); setLanding(null); setNotice(text); }, []);
   const logout = useCallback(async () => { try { await api("/auth/logout", { method: "POST", body: "{}" }); } catch { /* the session may already be gone */ } reset(); }, [reset]);
@@ -44,11 +50,17 @@ function App() {
 
   const handleLogin = data => { setCsrf(data.csrfToken); setActiveClass(null); setNotice(""); setLanding(data.landing || null); setUser(data.user); };
 
+  const goLogin = () => window.location.assign("/");
+
+  if (path === "/parent") return <ParentPage />; // the parent view needs no sign-in
   if (booting) return <Loading />;
+  if (!user && path === "/verify") return <VerifyPage onLogin={handleLogin} goLogin={goLogin} />;
+  if (!user && path === "/reset") return <ResetPage goLogin={goLogin} />;
   if (blocked) return <BlockedScreen message={blocked} logout={logout} />;
-  if (!user) return <Auth role={role} setRole={setRole} onLogin={handleLogin} notice={notice} />;
-  if (user.role === "teacher") return <TeacherShell key={user.id} user={user} logout={logout} landing={landing} onProfile={setUser} onSignedOut={reset} />;
-  return <StudentApp key={user.id} user={user} logout={logout} onProfile={setUser} onSignedOut={reset} />;
+  if (!user) return <Auth onLogin={handleLogin} notice={notice} />;
+  if (!user.profile_completed) return <Onboarding user={user} logout={logout} onDone={r => { setUser(r.user); const bits = [r.join && (r.join.ok ? `Your request to join ${r.join.className} was sent to ${r.join.teacherName}.` : r.join.error), r.createdClass && (r.createdClass.ok ? `Class ${r.createdClass.name} created (code ${r.createdClass.code}).` : r.createdClass.error)].filter(Boolean); setFlash(bits.join(" ")); }} />;
+  if (user.role === "teacher") return <TeacherShell key={user.id} user={user} logout={logout} landing={landing} onProfile={setUser} onSignedOut={reset} flash={flash} />;
+  return <StudentApp key={user.id} user={user} logout={logout} onProfile={setUser} onSignedOut={reset} flash={flash} />;
 }
 
 function Root() {

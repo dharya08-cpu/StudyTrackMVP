@@ -11,7 +11,8 @@ const eventAppliesTo = (event, cls) => (event.class_ids.length ? event.class_ids
 // classes: [{id,name,institute_id}]  schedule: [{id,class_id,weekday,start_time,end_time,subject,room}]
 // homework: [{id,class_id,title,due_date}]  tests: [{id,class_id,title,subject,test_date}]
 // events: [{id,kind,title,description,start_date,end_date,start_time,end_time,institute_id,class_ids}]  exams: [{id,subject,title,exam_date}]
-export function buildCalendar({ from, to, classes, schedule, homework, tests, events, exams = [], clock }) {
+// planItems (a student's own goals/revision/tasks): [{id,kind,title,subject,start_date,end_date,start_time,end_time,done_at}]
+export function buildCalendar({ from, to, classes, schedule, homework, tests, events, exams = [], planItems = [], clock }) {
   const classById = new Map(classes.map(c => [c.id, c]));
   const dates = dateRange(from, to, clock.shift);
   const out = [];
@@ -46,6 +47,13 @@ export function buildCalendar({ from, to, classes, schedule, homework, tests, ev
   for (const x of exams) {
     if (x.exam_date >= from && x.exam_date <= to) out.push({ key: `exam-${x.id}`, kind: "exam", title: x.title, date: x.exam_date, start_time: "", end_time: "", class_id: null, class_name: "", detail: x.subject });
   }
-  const order = { holiday: 0, exam: 1, test: 2, homework: 3, event: 4, class: 5 };
+  // A personal item appears on every day of its window; the last day is marked as the deadline.
+  for (const p of planItems) {
+    for (const date of dates) {
+      if (date < p.start_date || date > p.end_date) continue;
+      out.push({ key: `plan-${p.id}-${date}`, kind: p.kind, title: p.title, date, start_time: p.start_time || "", end_time: p.end_time || "", class_id: null, class_name: "", detail: p.subject || "", notes: p.notes || "", item_id: p.id, done: Boolean(p.done_at), is_deadline: date === p.end_date, start_date: p.start_date, end_date: p.end_date });
+    }
+  }
+  const order = { holiday: 0, exam: 1, test: 2, homework: 3, goal: 4, revision: 5, task: 6, event: 7, class: 8 };
   return out.sort((a, b) => a.date.localeCompare(b.date) || (a.start_time || "").localeCompare(b.start_time || "") || order[a.kind] - order[b.kind] || a.title.localeCompare(b.title));
 }

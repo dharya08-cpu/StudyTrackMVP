@@ -57,6 +57,9 @@ export function buildCsp({ isProd }) {
     "base-uri 'none'",
     "form-action 'self'",
     "frame-ancestors 'none'",
+    "worker-src 'none'",
+    "manifest-src 'self'",
+    "media-src 'none'",
   ];
   if (isProd) directives.push("upgrade-insecure-requests");
   return directives.join("; ");
@@ -70,7 +73,7 @@ export function securityHeaders(config) {
     res.set("X-Content-Type-Options", "nosniff");
     res.set("X-Frame-Options", "DENY");
     res.set("Referrer-Policy", "strict-origin-when-cross-origin");
-    res.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=()");
+    res.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=(), midi=(), interest-cohort=()");
     res.set("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
     res.set("Cross-Origin-Resource-Policy", "same-origin");
     res.set("X-DNS-Prefetch-Control", "off");

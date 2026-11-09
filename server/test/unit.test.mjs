@@ -9,6 +9,8 @@ import { maskIp, parseCookies, serializeCookie, csrfTokenFor, safeEqual, buildCs
 import { createLimiter } from "../src/ratelimit.js";
 import { parseUserAgent } from "../src/sessions.js";
 import { loadConfig } from "../src/config.js";
+import { weekTrend } from "../src/weektrend.js";
+import { createTestDb } from "./helpers.mjs";
 
 const clock = createClock("Asia/Kolkata", () => new Date("2026-10-07T08:00:00Z")); // Wednesday
 
@@ -160,4 +162,16 @@ test("calendar merges classes, homework, tests, events, holidays and exams; holi
   assert.equal(cal.find(e => e.kind === "class" && e.title === "Physics").on_holiday, false); // Wed Oct 7 not a holiday
   assert.equal(cal.filter(e => e.kind === "holiday").length, 2);
   assert.deepEqual(cal.map(e => e.date), [...cal.map(e => e.date)].sort());
+});
+
+test("weekly trend compares COMPLETED days with the same days last week (not a part-week with a whole week)", async () => {
+  const db = await createTestDb(); await db.script("CREATE TABLE study_logs (student_id INTEGER, minutes INTEGER, study_date DATE)");
+  const log = (date, minutes) => db.exec("INSERT INTO study_logs(student_id,minutes,study_date) VALUES(1,$1,$2)", [minutes, date]);
+  for (const d of ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"]) await log(d, 300); // last week: 300/day
+  await log("2026-10-05", 360); await log("2026-10-06", 360); await log("2026-10-07", 40); // this week Mon-Tue strong, Wednesday only just started
+  const wed = createClock("Asia/Kolkata", () => new Date("2026-10-07T08:00:00Z")); const r = await weekTrend(db, wed, 1);
+  assert.deepEqual([r.current, r.previous, r.days, r.trend], [720, 600, 2, "improving"], "today's partial day is ignored");
+  const mon = createClock("Asia/Kolkata", () => new Date("2026-10-05T08:00:00Z")); assert.equal((await weekTrend(db, mon, 1)).trend, "stable", "nothing is complete on a Monday");
+  const sun = createClock("Asia/Kolkata", () => new Date("2026-10-11T08:00:00Z")); assert.equal((await weekTrend(db, sun, 1)).days, 6);
+  assert.equal((await weekTrend(db, wed, 99)).trend, "stable", "no data, no trend");
 });

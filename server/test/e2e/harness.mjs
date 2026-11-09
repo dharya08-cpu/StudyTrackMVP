@@ -34,7 +34,7 @@ export async function buildClient(outDir) {
 // Minimal multipart parser for the upload tests (production uses multer).
 function parseMultipart(buf, contentType) {
   const boundary = /boundary=(.+)$/.exec(contentType)?.[1];
-  const fields = {}; let file = null;
+  const fields = {}; const files = [];
   const sep = Buffer.from(`--${boundary}`);
   let pos = buf.indexOf(sep);
   while (pos !== -1) {
@@ -44,17 +44,17 @@ function parseMultipart(buf, contentType) {
     const headEnd = part.indexOf("\r\n\r\n");
     const head = part.subarray(0, headEnd).toString("utf8"), data = part.subarray(headEnd + 4);
     const name = /name="([^"]+)"/.exec(head)?.[1], filename = /filename="([^"]*)"/.exec(head)?.[1];
-    if (filename !== undefined) { if (data.length || filename) file = { buffer: Buffer.from(data), originalname: filename, mimetype: /Content-Type: (.+)/i.exec(head)?.[1]?.trim() || "", size: data.length }; }
+    if (filename !== undefined) { if (data.length || filename) files.push({ buffer: Buffer.from(data), originalname: filename, mimetype: /Content-Type: (.+)/i.exec(head)?.[1]?.trim() || "", size: data.length }); }
     else if (name) fields[name] = data.toString("utf8");
     pos = next;
   }
-  return { fields, file };
+  return { fields, file: files[0] || null, files };
 }
 
 export async function startE2E({ port = 4173 } = {}) {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), "st-e2e-"));
   await buildClient(dist);
-  const app = await createTestApp({ env: { APP_URL: `http://localhost:${port}` }, limits: { join: 1000, joinIp: 1000, upload: 1000, announce: 1000, heavy: 100000, login: 1000 }, startTime: new Date().toISOString() });
+  const app = await createTestApp({ env: { APP_URL: `http://localhost:${port}`, ALLOW_DEMO: "true" }, limits: { join: 1000, joinIp: 1000, upload: 1000, announce: 1000, heavy: 100000, login: 1000 }, startTime: new Date().toISOString() });
   // real time for the browser session: keep the test clock close to the wall clock
   const origin = Date.now(); const start = new Date(app.clock.now()).getTime();
   app.setTime(new Date(start).toISOString());
@@ -74,12 +74,13 @@ export async function startE2E({ port = 4173 } = {}) {
     if (url.pathname.startsWith("/api/")) {
       const chunks = []; for await (const c of req) chunks.push(c);
       const raw = Buffer.concat(chunks); const ct = req.headers["content-type"] || "";
-      let body, file = null;
-      if (ct.startsWith("multipart/form-data")) { const p = parseMultipart(raw, ct); body = p.fields; file = p.file; }
+      let body, file = null, files = null;
+      if (ct.startsWith("multipart/form-data")) { const p = parseMultipart(raw, ct); body = p.fields; file = p.file; files = p.files; }
       else if (raw.length) { try { body = JSON.parse(raw.toString()); } catch { body = undefined; } }
-      const r = await inject(app, chain, onError, { method: req.method, url: req.url, body, headers: req.headers, file, ip: "127.0.0.1" });
+      const r = await inject(app, chain, onError, { method: req.method, url: req.url, body, headers: req.headers, file, files, ip: "127.0.0.1" });
       const headers = { ...r.headers, "content-type": "application/json" };
       if (r.setCookies.length) headers["set-cookie"] = r.setCookies;
+      if (Buffer.isBuffer(r.body)) { res.writeHead(r.status, { ...headers, ...(r.headers || {}) }); return res.end(r.body); }
       res.writeHead(r.status, headers); return res.end(JSON.stringify(r.body ?? {}));
     }
     const file = path.join(dist, url.pathname === "/" || !path.extname(url.pathname) ? "index.html" : url.pathname);

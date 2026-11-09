@@ -3,6 +3,7 @@ import { HttpError, v } from "../validate.js";
 import { resolveAudience, recipientIds } from "../audience.js";
 import { notify, inList, studentClasses } from "../repo.js";
 import { buildCalendar, MAX_RANGE_DAYS } from "../calendar.js";
+import { ensureReminders } from "../reminders.js";
 
 export function communicationRoutes(ctx, r) {
   const { db, clock, auth, role, limiters } = ctx;
@@ -11,6 +12,7 @@ export function communicationRoutes(ctx, r) {
 
   // ---- Notification centre ----
   r.get("/api/notifications", auth, async (req, res) => {
+    await ensureReminders(ctx, req.user); // due-date reminders are created as the student looks (at most every 30 minutes)
     const params = [req.user.id];
     let where = "user_id=$1";
     if (req.query.before) { params.push(v.id(req.query.before, "cursor")); where += ` AND id<$${params.length}`; }
@@ -21,6 +23,7 @@ export function communicationRoutes(ctx, r) {
     res.json({ notifications: rows, unread, next: rows.length === params.at(-1) ? rows.at(-1).id : null });
   });
   r.get("/api/notifications/unread-count", auth, async (req, res) => {
+    await ensureReminders(ctx, req.user);
     res.json({ unread: (await db.one("SELECT COUNT(*) AS n FROM notifications WHERE user_id=$1 AND read_at IS NULL", [req.user.id])).n });
   });
   r.post("/api/notifications/read-all", auth, async (req, res) => {
@@ -141,7 +144,12 @@ export function communicationRoutes(ctx, r) {
         events = rows.map(e => ({ ...e, class_ids: targets.filter(t => t.event_id === e.id).map(t => t.class_id) }));
       }
     }
-    if (req.user.role === "student") exams = await db.many("SELECT id,subject,title,exam_date FROM student_exams WHERE student_id=$1 AND exam_date>=$2 AND exam_date<=$3", [req.user.id, from, to]);
-    res.json({ from, to, classes: classes.map(c => ({ id: c.id, name: c.name })), entries: buildCalendar({ from, to, classes, schedule, homework, tests, events, exams, clock }) });
+    let planItems = [];
+    if (req.user.role === "student") {
+      exams = await db.many("SELECT id,subject,title,exam_date FROM student_exams WHERE student_id=$1 AND exam_date>=$2 AND exam_date<=$3", [req.user.id, from, to]);
+      // The student's own goals only show on their own calendar, and only when "all classes" is chosen: a class filter means "just that class".
+      if (!wanted) planItems = await db.many("SELECT id,kind,title,subject,notes,start_date,end_date,start_time,end_time,done_at FROM student_plan_items WHERE student_id=$1 AND start_date<=$3 AND end_date>=$2 ORDER BY id", [req.user.id, from, to]);
+    }
+    res.json({ from, to, today: clock.today(), classes: classes.map(c => ({ id: c.id, name: c.name })), entries: buildCalendar({ from, to, classes, schedule, homework, tests, events, exams, planItems, clock }) });
   });
 }

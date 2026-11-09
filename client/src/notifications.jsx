@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
 import { ErrorBox, Loading, timeAgo } from "./ui.jsx";
 
-const ICONS = { announcement: "📢", homework: "📝", homework_submitted: "📥", homework_reviewed: "✅", test: "🧪", marks: "🧪", holiday: "📅", event: "🎉", join_request: "🙋", join_approved: "✅", join_denied: "⚠️", removed: "⚠️", student_left: "👋", institute_status: "🏛️", teacher_joined: "🎓" };
+const ICONS = { reminder: "⏰", security: "🔐", announcement: "📢", homework: "📝", homework_submitted: "📥", homework_reviewed: "✅", test: "🧪", marks: "🧪", holiday: "📅", event: "🎉", join_request: "🙋", join_approved: "✅", join_denied: "⚠️", removed: "⚠️", student_left: "👋", institute_status: "🏛️", teacher_joined: "🎓" };
 export const iconFor = n => (n.type === "announcement" && n.priority === "important" ? "❗" : ICONS[n.type] || "🔔");
 
 // Polls the unread count (only while the tab is visible).

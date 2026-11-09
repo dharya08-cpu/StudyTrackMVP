@@ -14,7 +14,7 @@ export function errorHandler(config) {
     if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "Invalid JSON in request body" });
     if (err?.type === "entity.too.large") return res.status(413).json({ error: "Request body is too large" });
     if (err?.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "That file is too large" });
-    if (err?.name === "MulterError") return res.status(400).json({ error: "A single file upload is required" });
+    if (err?.name === "MulterError") return res.status(400).json({ error: "That upload could not be read. Send up to 5 files, each as a PDF, JPG, PNG or DOCX." });
     console.error("Unhandled error:", config?.isProd ? err?.message : err);
     res.status(500).json({ error: "Internal server error" });
   };

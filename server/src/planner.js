@@ -1,4 +1,5 @@
 // Smart study planner: pure, deterministic functions (no database, no clock) so they can be tested exactly.
+const goalPoints = d => (d == null ? 0 : d < 0 ? 30 : d === 0 ? 35 : d <= 2 ? 30 : d <= 7 ? 20 : d <= 14 ? 10 : 0);
 const examPoints = d => (d == null || d < 0 ? 0 : d === 0 ? 45 : d <= 3 ? 40 : d <= 7 ? 30 : d <= 14 ? 20 : d <= 30 ? 10 : 0);
 const round5 = n => Math.max(5, Math.round(n / 5) * 5);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -12,13 +13,15 @@ export function scoreSubject(s) {
   else add(Math.min(20, s.daysSinceStudied * 2), `Not studied for ${plural(s.daysSinceStudied, "day")}`);
   if (s.avgPercentage != null) add(s.avgPercentage < 50 ? 20 : s.avgPercentage < 65 ? 12 : s.avgPercentage < 80 ? 5 : 0, `Test average ${Math.round(s.avgPercentage)}%`);
   if (s.syllabusPct != null) add(Math.round((100 - s.syllabusPct) / 10), `${Math.round(100 - s.syllabusPct)}% of the syllabus is left`);
+  const g = s.goalDueDays;
+  add(goalPoints(g), g == null ? "" : g < 0 ? "Your goal for this subject is overdue" : g === 0 ? "Your goal for this subject is due today" : `Your goal for this subject is due in ${plural(g, "day")}`);
   if (s.plannedToday) add(15, "In your plan for today");
   let score = parts.reduce((sum, p) => sum + p.points, 0);
   if ((s.minutesToday || 0) >= 45) score -= 20; // already worked on it today
   return { score, reasons: parts.sort((a, b) => b.points - a.points).map(p => p.reason).slice(0, 3) };
 }
 
-// subjects: [{ subject, minutesToday, daysSinceStudied|null, studiedBefore, avgPercentage|null, syllabusPct|null, nextExamDays|null, plannedToday }]
+// subjects: [{ subject, minutesToday, daysSinceStudied|null, studiedBefore, avgPercentage|null, syllabusPct|null, nextExamDays|null, goalDueDays|null, plannedToday }]
 // homework: { dueSoon, overdue }   goal: { dailyMinutes|null, todayMinutes }
 export function buildSuggestions({ subjects = [], homework = { dueSoon: 0, overdue: 0 }, goal = { dailyMinutes: null, todayMinutes: 0 } }) {
   const items = [];

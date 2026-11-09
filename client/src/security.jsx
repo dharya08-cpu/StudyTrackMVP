@@ -17,6 +17,8 @@ export function SecurityPage({ user, onSignedOut, onProfile }) {
   const [attempt, setAttempt] = useState(0);
   const [config, setConfig] = useState(null);
   const [name, setName] = useState(user.name);
+  const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
+  const [pwAttempt, setPwAttempt] = useState(0), [needGoogle, setNeedGoogle] = useState(false);
 
   const load = useCallback(async () => { try { setSessions((await api("/account/sessions")).sessions); setError(""); } catch (e) { setError(e.message); } }, []);
   useEffect(() => { load(); api("/auth/config").then(setConfig).catch(() => {}); }, [load]);
@@ -42,6 +44,20 @@ export function SecurityPage({ user, onSignedOut, onProfile }) {
     try { await api("/account/reauth", { method: "POST", body: json({ credential }) }); setFlow("new"); setAttempt(a => a + 1); setMessage("Confirmed. Now choose the new Gmail account."); }
     catch (e) { setError(e.message); setAttempt(a => a + 1); }
   };
+  const savePassword = async e => {
+    e.preventDefault(); setError(""); setMessage("");
+    if (pw.next !== pw.confirm) { setError("The two new passwords do not match."); return; }
+    setBusy(true);
+    try {
+      const r = await api("/account/change-password", { method: "POST", body: json({ currentPassword: pw.current, newPassword: pw.next }) });
+      setPw({ current: "", next: "", confirm: "" }); setNeedGoogle(false); onProfile?.({ ...user, has_password: true });
+      setMessage(r.signedOutOthers ? `Password saved. ${r.signedOutOthers} other device${r.signedOutOthers === 1 ? "" : "s"} logged out.` : "Password saved."); await load();
+    } catch (err) { setError(err.message); if (err.code === "REAUTH_REQUIRED") { setNeedGoogle(true); setPwAttempt(a => a + 1); } } finally { setBusy(false); }
+  };
+  const reauthForPassword = async credential => {
+    try { await api("/account/reauth", { method: "POST", body: json({ credential }) }); setNeedGoogle(false); setMessage("Confirmed. Press Save password again."); setError(""); }
+    catch (e) { setError(e.message); setPwAttempt(a => a + 1); }
+  };
   const saveName = async e => {
     e.preventDefault();
     await run(async () => { const r = await api("/account/profile", { method: "PATCH", body: json({ name }) }); onProfile?.({ ...user, name: r.name }); }, "Name updated.");
@@ -49,7 +65,7 @@ export function SecurityPage({ user, onSignedOut, onProfile }) {
 
   return (
     <>
-      <div className="page-title"><h1>Security</h1><p className="muted">Manage where you are signed in and which Google account is linked.</p></div>
+      <div className="page-title"><h1>Security &amp; privacy</h1><p className="muted">Manage where you are signed in, your password, and your data.</p></div>
       {message && <p className="success" role="status">{message}</p>}
       <ErrorBox error={error} />
 
@@ -97,8 +113,26 @@ export function SecurityPage({ user, onSignedOut, onProfile }) {
             <button className="link" onClick={() => setFlow(null)}>Cancel</button>
           </div>
         )}
-        <p className="hint">StudyTrack has no password. Google handles sign-in, so there is nothing to reset or leak here.</p>
       </section>
+
+      {!user.is_demo && (
+        <section className="panel">
+          <h2>{user.has_password ? "Change password" : "Add a password"}</h2>
+          <p className="muted">{user.has_password ? "Changing it logs out your other devices." : "You sign in with Google now. Add a password if you also want to log in with your Gmail and password."}</p>
+          <form onSubmit={savePassword}>
+            {user.has_password && <label className="field">Current password<input type="password" value={pw.current} onChange={e => setPw({ ...pw, current: e.target.value })} autoComplete="current-password" required /></label>}
+            <label className="field">New password<input type="password" value={pw.next} onChange={e => setPw({ ...pw, next: e.target.value })} autoComplete="new-password" minLength={10} required /></label>
+            <label className="field">Confirm new password<input type="password" value={pw.confirm} onChange={e => setPw({ ...pw, confirm: e.target.value })} autoComplete="new-password" minLength={10} required /></label>
+            <p className="hint">At least 10 characters with a letter and a number. Avoid common words like “password”.</p>
+            {needGoogle && config?.googleEnabled && <div className="panel inner"><p>Confirm it's you with Google first.</p><GoogleButton key={`pw-${pwAttempt}`} clientId={config.googleClientId} onCredential={reauthForPassword} onError={setError} /></div>}
+            <button className="primary" disabled={busy}>Save password</button>
+          </form>
+        </section>
+      )}
+
+      <AlertsSection user={user} />
+
+      {!user.is_demo && <PrivacySection user={user} onSignedOut={onSignedOut} config={config} />}
 
       {confirmAll && (
         <Modal title="Log out everywhere?" onClose={() => setConfirmAll(false)}>
@@ -107,5 +141,94 @@ export function SecurityPage({ user, onSignedOut, onProfile }) {
         </Modal>
       )}
     </>
+  );
+}
+
+// Privacy rights without asking anyone: download everything StudyTrack holds about you, or delete your account.
+function PrivacySection({ user, onSignedOut, config }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [message, setMessage] = useState("");
+  const [confirming, setConfirming] = useState(false), [form, setForm] = useState({ confirm: "", password: "" });
+  const [needGoogle, setNeedGoogle] = useState(false), [attempt, setAttempt] = useState(0);
+
+  const download = async () => {
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const data = await api("/account/export");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      const a = document.createElement("a"); a.href = url; a.download = "studytrack-my-data.json"; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage("Your data was downloaded as studytrack-my-data.json.");
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  const remove = async e => {
+    e?.preventDefault?.(); setBusy(true); setError("");
+    try {
+      await api("/account", { method: "DELETE", body: json({ confirm: form.confirm, password: user.has_password ? form.password : undefined }) });
+      setCsrf(null); onSignedOut("Your account was deleted.");
+    } catch (err) {
+      setError(err.message); setBusy(false);
+      if (err.code === "REAUTH_REQUIRED") { setNeedGoogle(true); setAttempt(a => a + 1); }
+    }
+  };
+  const reauth = async credential => {
+    try { await api("/account/reauth", { method: "POST", body: json({ credential }) }); setNeedGoogle(false); setError(""); setMessage("Confirmed. Press Delete my account again."); }
+    catch (e) { setError(e.message); setAttempt(a => a + 1); }
+  };
+  return (
+    <section className="panel">
+      <h2>Your data</h2>
+      <p className="muted">You own your information. Download a copy of it, or delete your account whenever you like.</p>
+      {message && <p className="success" role="status">{message}</p>}
+      <div className="privacy-actions">
+        <div className="privacy-card">
+          <h3>Download my data</h3>
+          <p className="muted">A file with your profile, study logs, goals, calendar, submissions and results. It never includes passwords.</p>
+          <div><button className="secondary" disabled={busy} onClick={download}>{busy && !confirming ? "Preparing…" : "Download my data"}</button></div>
+        </div>
+        <div className="privacy-card danger">
+          <h3>Delete my account</h3>
+          <p>This permanently deletes your account and everything in it: study logs, goals, calendar items, submissions and notifications. It cannot be undone.{user.role === "teacher" ? " Teachers must delete their classes first." : ""}</p>
+          {!confirming ? <div><button className="danger-outline" onClick={() => { setConfirming(true); setError(""); setMessage(""); }}>Delete my account…</button></div> : (
+            <form onSubmit={remove}>
+              {user.has_password && <label className="field">Your password<input type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} autoComplete="current-password" required /></label>}
+              <label className="field">Type DELETE to confirm<input value={form.confirm} onChange={e => setForm({ ...form, confirm: e.target.value })} autoComplete="off" autoCapitalize="characters" required /></label>
+              {needGoogle && config?.googleEnabled && <div className="panel inner"><p>Confirm it's you with Google first.</p><GoogleButton key={`del-${attempt}`} clientId={config.googleClientId} onCredential={reauth} onError={setError} /></div>}
+              <ErrorBox error={error} />
+              <div className="action-row"><button type="button" className="secondary" onClick={() => { setConfirming(false); setError(""); }}>Keep my account</button><button className="danger-solid" disabled={busy || form.confirm !== "DELETE"}>{busy ? "Deleting…" : "Delete my account"}</button></div>
+            </form>
+          )}
+        </div>
+      </div>
+      {!confirming && error && <ErrorBox error={error} />}
+    </section>
+  );
+}
+
+// Switches for due-date reminders (students) and "new sign-in" alerts (everyone).
+function AlertsSection({ user }) {
+  const [settings, setSettings] = useState(null), [error, setError] = useState(""), [saving, setSaving] = useState("");
+  useEffect(() => { api("/account/settings").then(setSettings).catch(e => setError(e.message)); }, []);
+  if (!settings) return error ? <section className="panel"><ErrorBox error={error} /></section> : null;
+  const set = async (key, value) => {
+    setSaving(key); setError("");
+    try { setSettings(await api("/account/settings", { method: "PATCH", body: json({ [key]: value }) })); } catch (e) { setError(e.message); } finally { setSaving(""); }
+  };
+  const rows = [
+    ...(user.role === "student" ? [["remindersEnabled", "reminders_enabled", "Due-date reminders", "A notification the day before, on the day, and when something is overdue: homework, tests, exams and your own goals."]] : []),
+    ["loginAlertsEnabled", "login_alerts_enabled", "New sign-in alerts", `When your account is opened on a new kind of device (a different browser or phone), you get a notification in the app${settings.email_alerts_available ? " and an e-mail" : ""}, so you can act fast if it was not you.`],
+  ];
+  return (
+    <section className="panel">
+      <h2>Alerts and reminders</h2>
+      <div className="alert-rows">
+        {rows.map(([key, field, title, text]) => (
+          <label className="alert-row" key={key}>
+            <input type="checkbox" checked={settings[field]} disabled={saving === key} onChange={e => set(key, e.target.checked)} />
+            <span><b>{title}</b><small>{text}</small></span>
+          </label>
+        ))}
+      </div>
+      <ErrorBox error={error} />
+    </section>
   );
 }

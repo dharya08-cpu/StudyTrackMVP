@@ -63,6 +63,7 @@ export function instituteRoutes(ctx, r) {
 
   // "Create Your Own Coaching Institute": the signed-in teacher becomes the head once the owner approves the request.
   r.post("/api/institute/request", ...guard, limiters.signup.guard, async (req, res) => {
+    if (req.user.is_demo) throw new HttpError(403, "Demo accounts can't create institutes.", "DEMO_LOCKED");
     const b = req.body || {};
     const name = v.str(b.instituteName, "Institute name", { min: 3, max: 80 });
     const code = v.code(b.coachingCode, "Coaching code", { optional: true });
@@ -106,7 +107,8 @@ export function instituteRoutes(ctx, r) {
     if (req.user.institute_id) throw new HttpError(409, "You already belong to a coaching institute");
     const code = v.code(req.body?.code, "Coaching code");
     const inst = await db.one("SELECT * FROM institutes WHERE code=$1 AND status='active'", [code]);
-    if (!inst) throw new HttpError(404, "No active coaching institute found with that code. Check it with your institute head.");
+    const head = inst && inst.head_id ? await db.one("SELECT is_demo FROM users WHERE id=$1", [inst.head_id]) : null;
+    if (!inst || Boolean(head?.is_demo) !== Boolean(req.user.is_demo)) throw new HttpError(404, "No active coaching institute found with that code. Check it with your institute head.");
     await assertTeacherSeat(inst);
     const n = await db.exec("UPDATE users SET institute_id=$1,institute_role='teacher' WHERE id=$2 AND institute_id IS NULL", [inst.id, req.user.id]);
     if (!n) throw new HttpError(409, "You already belong to a coaching institute");

@@ -54,7 +54,8 @@ test("V3 SQLite data is imported: class_code becomes memberships, passwords are 
   assert.deepEqual(memberships, [{ student_id: 3, class_id: 1, status: "active" }, { student_id: 6, class_id: 1, status: "active" }]);
   assert.equal((await db.one("SELECT email FROM users WHERE id=2")).email, "head@gmail.com", "e-mails are lower-cased");
   assert.equal((await db.one("SELECT google_sub FROM users WHERE id=2")).google_sub, null);
-  assert.equal(JSON.stringify(await db.many("SELECT * FROM users")).includes("hash"), false, "no password hashes");
+  assert.equal(JSON.stringify(await db.many("SELECT * FROM users")).includes("$2a$hash"), false, "old password hashes are not copied");
+  assert.equal((await db.one("SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL")).n, 0);
   assert.equal((await db.one("SELECT head_id FROM institutes WHERE id=1")).head_id, 2); assert.equal((await db.one("SELECT code FROM classes")).code, "PHY11");
   assert.equal((await db.one("SELECT file_path FROM homework")).file_path, "2/old-file.pdf"); assert.equal((await db.one("SELECT created_at FROM users WHERE id=3")).created_at, "2026-09-02T09:00:00Z");
   assert.equal((await db.one("SELECT category FROM study_logs")).category, "self-study", "invalid enum falls back safely");

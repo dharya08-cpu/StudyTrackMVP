@@ -7,7 +7,7 @@ export function inList(params, values) {
 }
 
 const CLASS_SELECT = `SELECT c.id,c.name,c.code,c.teacher_id,c.suspended,c.suspend_reason,c.created_at,
-  t.name AS teacher_name,t.banned AS teacher_banned,t.institute_id,
+  t.name AS teacher_name,t.banned AS teacher_banned,t.is_demo AS teacher_is_demo,t.institute_id,
   i.status AS inst_status,i.control_mode AS inst_mode,i.read_only AS inst_read_only,i.name AS institute_name
   FROM classes c JOIN users t ON t.id=c.teacher_id LEFT JOIN institutes i ON i.id=t.institute_id`;
 
@@ -23,7 +23,7 @@ export function decorateClass(r) {
   else if (instituteBlocked) reason = "Your coaching institute's access is paused. Please contact your teacher.";
   return {
     id: r.id, name: r.name, code: r.code, teacher_id: r.teacher_id, teacher_name: r.teacher_name,
-    institute_id: r.institute_id ?? null, institute_name: r.institute_name ?? null,
+    institute_id: r.institute_id ?? null, institute_name: r.institute_name ?? null, teacher_is_demo: Boolean(r.teacher_is_demo),
     suspended: Boolean(r.suspended), suspend_reason: r.suspend_reason, created_at: r.created_at,
     available: !reason, unavailable_reason: reason,
     read_only: Boolean(managed && r.inst_status === "active" && r.inst_read_only),
@@ -66,9 +66,9 @@ export const classCountFor = async (db, id) => (await db.one("SELECT COUNT(*) AS
 export const studentCountFor = async (db, id) => (await db.one(`SELECT COUNT(DISTINCT m.student_id) AS n FROM student_class_memberships m
   JOIN classes c ON c.id=m.class_id JOIN users t ON t.id=c.teacher_id WHERE m.status='active' AND t.institute_id=$1`, [id])).n;
 export async function storageBytesFor(db, id) {
-  const hw = await db.one("SELECT COALESCE(SUM(h.file_size),0) AS n FROM homework h JOIN classes c ON c.id=h.class_id JOIN users t ON t.id=c.teacher_id WHERE t.institute_id=$1", [id]);
-  const ts = await db.one("SELECT COALESCE(SUM(x.file_size),0) AS n FROM tests x JOIN classes c ON c.id=x.class_id JOIN users t ON t.id=c.teacher_id WHERE t.institute_id=$1", [id]);
-  return hw.n + ts.n;
+  const teacherFiles = (await db.one("SELECT COALESCE(SUM(a.file_size),0) AS n FROM attachments a JOIN classes c ON c.id=a.class_id JOIN users t ON t.id=c.teacher_id WHERE t.institute_id=$1", [id])).n;
+  const studentFiles = (await db.one("SELECT COALESCE(SUM(f.file_size),0) AS n FROM submission_files f JOIN classes c ON c.id=f.class_id JOIN users t ON t.id=c.teacher_id WHERE t.institute_id=$1", [id])).n;
+  return teacherFiles + studentFiles;
 }
 export async function recordCountFor(db, id) {
   const q = [

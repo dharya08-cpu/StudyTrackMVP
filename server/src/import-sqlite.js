@@ -4,6 +4,7 @@
 // - Passwords are NOT copied (V4 has Google sign-in only). Accounts link to Google on their first sign-in by e-mail.
 import { createRequire } from "node:module";
 import { BACKUP_TABLES, resetSequences } from "./backup.js";
+import { backfillLegacyFiles } from "./attachments.js";
 
 const require = createRequire(import.meta.url);
 export async function openSqliteFile(file) {
@@ -121,6 +122,7 @@ export async function importSqlite({ sqlitePath, target, wipe = false, log = () 
       await insert("syllabus_chapters", ["id", "class_id", "subject", "chapter", "status", "updated_at"], rowsOf("syllabus_chapters").filter(c => classIds.has(c.class_id)).map(c => ({ id: c.id, class_id: c.class_id, subject: c.subject, chapter: c.chapter, status: oneOf(c.status, ["not-started", "in-progress", "completed"], "not-started"), updated_at: iso(c.updated_at) || now })));
       await insert("admin_log", ["id", "action", "target_type", "target_id", "target_label", "detail", "created_at"], rowsOf("admin_log").map(l => ({ id: l.id, action: l.action, target_type: l.target_type, target_id: l.target_id ?? null, target_label: l.target_label || "", detail: l.detail || "", created_at: iso(l.created_at) || now })));
       void ic;
+      await backfillLegacyFiles(t); // V3 files recorded on the homework/tests rows become V6 attachments
       await resetSequences(t);
     });
   } finally { src.close(); }
