@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, json } from "./api.js";
 import { ErrorBox, List, Loading, Modal, localDateInput, shiftDate } from "./ui.jsx";
 import { AudiencePicker, audienceBody, audienceReady } from "./announcements.jsx";
+import { PlanItemModal, PLAN_KINDS, fmtRange, dueInfo } from "./my-calendar.jsx";
 
-export const KINDS = { class: { icon: "📚", label: "Class" }, homework: { icon: "📝", label: "Homework due" }, test: { icon: "🧪", label: "Test" }, event: { icon: "📢", label: "Event" }, holiday: { icon: "📅", label: "Holiday" }, exam: { icon: "🎯", label: "My exam" } };
+export const KINDS = { class: { icon: "📚", label: "Class" }, homework: { icon: "📝", label: "Homework due" }, test: { icon: "🧪", label: "Test" }, event: { icon: "📢", label: "Event" }, holiday: { icon: "📅", label: "Holiday" }, exam: { icon: "🎓", label: "My exam" }, goal: { icon: "🎯", label: "Study goal" }, revision: { icon: "🔁", label: "Revision" }, task: { icon: "✅", label: "My task" } };
+const MINE = new Set(["goal", "revision", "task"]);
+const dotKind = k => (MINE.has(k) ? "goal" : k);
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const isoWeekday = date => ((new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7) + 1;
 const monthShift = (month, delta) => { const d = new Date(`${month}-01T12:00:00Z`); d.setUTCMonth(d.getUTCMonth() + delta); return d.toISOString().slice(0, 7); };
@@ -11,7 +14,7 @@ const monthLabel = month => new Date(`${month}-01T12:00:00Z`).toLocaleDateString
 export const timeRange = e => (e.start_time ? `${e.start_time}${e.end_time ? `–${e.end_time}` : ""}` : "");
 
 // One calendar for classes, homework deadlines, tests, events and holidays.
-export function CalendarView({ classes = [], editable = false, ctx = null, reloadKey = 0 }) {
+export function CalendarView({ classes = [], editable = false, ctx = null, reloadKey = 0, personal = false, onPersonalChanged = null }) {
   const today = localDateInput();
   const [month, setMonth] = useState(today.slice(0, 7));
   const [selected, setSelected] = useState(today);
@@ -19,6 +22,7 @@ export function CalendarView({ classes = [], editable = false, ctx = null, reloa
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
+  const [planEdit, setPlanEdit] = useState(undefined);   // undefined = closed, null = new item, object = editing
   const first = `${month}-01`;
   const gridStart = useMemo(() => shiftDate(first, -(isoWeekday(first) - 1)), [first]);
   const gridEnd = shiftDate(gridStart, 41);
@@ -31,6 +35,11 @@ export function CalendarView({ classes = [], editable = false, ctx = null, reloa
   const byDate = useMemo(() => { const m = new Map(); for (const e of data?.entries || []) { if (!m.has(e.date)) m.set(e.date, []); m.get(e.date).push(e); } return m; }, [data]);
   const cells = Array.from({ length: 42 }, (_, i) => shiftDate(gridStart, i));
   const dayEntries = byDate.get(selected) || [];
+  const todayIso = data?.today || today;
+  const planChanged = () => { setPlanEdit(undefined); load(); onPersonalChanged?.(); };
+  const togglePlan = async e => { try { await api(`/student/plan-items/${e.item_id}`, { method: "PATCH", body: json({ done: !e.done }) }); load(); onPersonalChanged?.(); } catch (err) { setError(err.message); } };
+  const deletePlan = async e => { if (!window.confirm(`Delete "${e.title}" from your calendar?`)) return; try { await api(`/student/plan-items/${e.item_id}`, { method: "DELETE" }); load(); onPersonalChanged?.(); } catch (err) { setError(err.message); } };
+  const asItem = e => ({ id: e.item_id, kind: e.kind, title: e.title, subject: e.detail, notes: e.notes, start_date: e.start_date, end_date: e.end_date, start_time: e.start_time, end_time: e.end_time, done: e.done });
   const removeEvent = async e => { try { await api(`/teacher/calendar-events/${e.event_id}`, { method: "DELETE" }); load(); } catch (err) { setError(err.message); } };
 
   return (
@@ -42,16 +51,17 @@ export function CalendarView({ classes = [], editable = false, ctx = null, reloa
           <div className="cal-tools">
             {classes.length > 1 && <select value={classId} onChange={e => setClassId(e.target.value)} aria-label="Filter by class"><option value="">All classes</option>{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}
             {editable && <button className="primary" onClick={() => setAdding(true)}>+ Event / holiday</button>}
+            {personal && <button className="primary" onClick={() => setPlanEdit(null)}>+ Add to my calendar</button>}
           </div>
         </div>
-        <div className="cal-legend">{Object.entries(KINDS).filter(([k]) => editable ? k !== "exam" : true).map(([k, v]) => <span key={k}>{v.icon} {v.label}</span>)}</div>
+        <div className="cal-legend">{Object.entries(KINDS).filter(([k]) => (editable ? k !== "exam" && !MINE.has(k) : personal || !MINE.has(k))).map(([k, v]) => <span key={k}><i className={`dot ${dotKind(k)}`} aria-hidden="true" />{v.icon} {v.label}</span>)}</div>
         <ErrorBox error={error} />
         {!data ? <Loading /> : (
           <div className="cal-grid" role="grid" aria-label={monthLabel(month)}>
             {DAYS.map(d => <div key={d} className="cal-dow" role="columnheader">{d}</div>)}
             {cells.map(date => {
               const list = byDate.get(date) || [];
-              const kinds = [...new Set(list.map(e => e.kind))];
+              const kinds = [...new Set(list.map(e => dotKind(e.kind)))];
               return (
                 <button key={date} role="gridcell" className={`cal-cell ${date.slice(0, 7) !== month ? "dim" : ""} ${date === today ? "today" : ""} ${date === selected ? "selected" : ""} ${kinds.includes("holiday") ? "holiday" : ""}`} onClick={() => setSelected(date)} aria-label={`${date}, ${list.length} items`}>
                   <span className="cal-num">{Number(date.slice(8))}</span>
@@ -65,7 +75,20 @@ export function CalendarView({ classes = [], editable = false, ctx = null, reloa
       </section>
       <section className="panel">
         <h2>{new Date(`${selected}T12:00:00Z`).toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })}</h2>
-        <List items={dayEntries} empty="Nothing scheduled this day." render={e => (
+        <List items={dayEntries} empty={personal ? "Nothing scheduled this day. Tap “+ Add to my calendar” to plan something." : "Nothing scheduled this day."} render={e => MINE.has(e.kind) ? (
+          <div className={`item cal-item ${e.kind}${e.done ? " is-done" : ""}`}>
+            <div className="mine-row">
+              <button type="button" className="tick-btn" aria-pressed={e.done} aria-label={e.done ? `Mark "${e.title}" as not done` : `Mark "${e.title}" as done`} onClick={() => togglePlan(e)}>{e.done ? "✓" : ""}</button>
+              <div>
+                <b>{KINDS[e.kind].icon} {e.title}<span className="mine-tag">Mine</span></b>
+                <small>{PLAN_KINDS[e.kind].label}{e.detail ? ` • ${e.detail}` : ""} • {fmtRange(e.start_date, e.end_date)}{timeRange(e) ? ` • ${timeRange(e)}` : ""}</small>
+                {e.notes && <small className="pre">{e.notes}</small>}
+                <small>{e.is_deadline ? <span className={`due-chip ${dueInfo(asItem(e), todayIso).tone}`}>Complete by today: {dueInfo(asItem(e), todayIso).text}</span> : <span className={`due-chip ${dueInfo(asItem(e), todayIso).tone === "overdue" ? "overdue" : ""}`}>Complete by {fmtRange(e.end_date, e.end_date)}</span>}</small>
+              </div>
+            </div>
+            <div className="status-group"><button className="secondary small-btn" onClick={() => setPlanEdit(asItem(e))}>Edit</button><button className="danger-outline small-btn" onClick={() => deletePlan(e)}>Delete</button></div>
+          </div>
+        ) : (
           <div className={`item cal-item ${e.kind}`}>
             <div>
               <b>{KINDS[e.kind].icon} {e.title}</b>
@@ -76,6 +99,7 @@ export function CalendarView({ classes = [], editable = false, ctx = null, reloa
           </div>
         )} />
       </section>
+      {planEdit !== undefined && <PlanItemModal item={planEdit} defaultDate={selected} onClose={() => setPlanEdit(undefined)} onSaved={planChanged} />}
       {adding && ctx && <EventModal ctx={ctx} date={selected} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); load(); }} />}
     </>
   );

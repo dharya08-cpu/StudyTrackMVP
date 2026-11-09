@@ -13,3 +13,6 @@ client/dist/
 *.ndjson.gz
 backups/
 server/test/e2e/shots/
+server/node_modules/
+client/node_modules/
+test_output.log

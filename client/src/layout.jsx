@@ -7,7 +7,7 @@ export function Layout({ user, title, subtitle, children, logout, nav = [], tab,
     <div className="app">
       <header>
         <div className="header-left">
-          {onMenu && <button className="menu-btn" onClick={onMenu} aria-label={menuBadge > 0 ? `Open menu, ${menuBadge} pending requests` : "Open menu"}><span className="burger" aria-hidden="true"><i /><i /><i /></span><span>Menu</span>{menuBadge > 0 && <span className="menu-badge" aria-hidden="true">{menuBadge}</span>}</button>}
+          {onMenu && <button className="menu-btn" onClick={onMenu} aria-label={menuBadge > 0 ? `Open menu, ${menuBadge} new` : "Open menu"}><span className="burger" aria-hidden="true"><i /><i /><i /></span><span>Menu</span>{menuBadge > 0 && <span className="menu-badge" aria-hidden="true">{menuBadge}</span>}</button>}
           <div className="brand small">Study<span>Track</span></div>
         </div>
         <div className="userbar">
@@ -17,7 +17,7 @@ export function Layout({ user, title, subtitle, children, logout, nav = [], tab,
       </header>
       {banner}
       <main className="container">
-        {title && <div className="page-title"><h1>{title}</h1><p className="muted">{subtitle ?? defaultSubtitle}</p></div>}
+        {title && <div className="page-title"><h1>{title}</h1>{(subtitle ?? defaultSubtitle) && <p className="muted">{subtitle ?? defaultSubtitle}</p>}</div>}
         {nav.length > 0 && <div className="tabs" role="tablist">{nav.map(n => <button key={n} role="tab" aria-selected={tab === n} className={tab === n ? "tab active" : "tab"} onClick={() => setTab(n)}>{n}</button>)}</div>}
         {children}
       </main>

@@ -47,12 +47,23 @@ async function request(path, options = {}, { admin = false } = {}) {
   if (!res.ok) {
     const error = new ApiError(data.error || "Request failed", res.status, data.code);
     if (!admin && res.status === 403 && ACCESS_BLOCK_CODES.has(data.code)) window.dispatchEvent(new CustomEvent("studytrack:blocked", { detail: { message: error.message, code: data.code } }));
-    if (!admin && res.status === 401 && hadSession && !path.startsWith("/auth/")) window.dispatchEvent(new CustomEvent("studytrack:signed-out"));
+    if (!admin && res.status === 401 && data.code === "UNAUTHENTICATED" && hadSession && !path.startsWith("/auth/")) window.dispatchEvent(new CustomEvent("studytrack:signed-out"));
     throw error;
   }
   return data;
 }
 
+// Downloads a file (an Excel or CSV report) through the signed-in session and hands it to the browser's save dialog.
+export async function downloadFile(path, fallbackName = "download") {
+  const res = await send(path, {}, false);
+  if (!res.ok) { const data = await res.json().catch(() => ({})); throw new ApiError(data.error || "The download failed. Please try again.", res.status, data.code); }
+  const blob = await res.blob();
+  const match = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = match ? match[1] : fallbackName; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  return a.download;
+}
 export const api = (path, options) => request(path, options);
 export const adminApi = (path, options) => request(path, options, { admin: true });
 export const json = body => JSON.stringify(body);

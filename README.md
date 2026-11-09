@@ -1,15 +1,33 @@
-# StudyTrack V4
+# StudyTrack V6
 
 A study-progress app for students, teachers and coaching institutes. React front end, Express API, **PostgreSQL (Supabase)** database, **Supabase Storage** for files, **Google-only sign-in**.
 
-Everything in your V4 list is in this version. See [docs/V4-CHANGES.md](docs/V4-CHANGES.md) for where each item lives, [docs/SECURITY.md](docs/SECURITY.md) for the security design and [docs/RECOVERY.md](docs/RECOVERY.md) for backups and disaster recovery.
+V6 is a menu-driven redesign with a student-editable calendar, many files per homework or test, and a security and privacy pass. See **[docs/V6-CHANGES.md](docs/V6-CHANGES.md)** for everything that changed and why, [docs/V4-CHANGES.md](docs/V4-CHANGES.md) for the V4 items, [docs/PRIVACY-REQUESTS.md](docs/PRIVACY-REQUESTS.md) for privacy requests, [docs/SECURITY.md](docs/SECURITY.md) for the security design and [docs/RECOVERY.md](docs/RECOVERY.md) for backups and disaster recovery.
 
-## What is new in V4
+## What is new in V6
+
+| | |
+|---|---|
+| Menu | Students and teachers get a **Menu** button. Study, homework, tests, calendar, planner and the rest of the student app live in it; a teacher's classroom sections (overview, study activity, homework, tests, results, attendance, syllabus, students) live in it too, with a class switcher. Light, dark or automatic appearance. |
+| My calendar | Students can **add, edit, tick off and delete their own study goals, revision plans and tasks**, each with a start date and a complete-by date. Private to the student. Open goals push their subject up "what to study today". |
+| Many files | A homework or test can carry **many files** and every one stays viewable (View and Download per file). Attaching a file used to replace the previous one. |
+| Design | New colour system with measured contrast (WCAG AA), dark mode, larger touch targets, a calmer layout. |
+| Security | Generic login errors (no account discovery), stronger password hashing that upgrades itself, a 10-character password rule with a common-word check, tighter headers, safer file links. |
+| Privacy | **Download my data** and **Delete my account** in Security & privacy. |
+| Reminders | Students are reminded the day before, the day of and when homework, tests, exams and their own goals are overdue. |
+| Parent view | A student shares a read-only weekly summary with a parent through a secret link. No parent account. |
+| Hand in files | Students attach PDFs, photos or Word files to homework; teachers open them in the app. |
+| Sign-in alerts | A notification (and e-mail, when set up) when the account is used on a new kind of device. |
+| Class report | Teachers download results, attendance and homework as Excel or CSV. |
+| Demo | All of the above is in the demo accounts ([docs/DEMO.md](docs/DEMO.md)). |
+| Scale | Tested with 100+ teachers and students working at once, in separate classes and institutes, with nothing mixed: [docs/SCALE.md](docs/SCALE.md). |
+
+## Also in V4
 
 | | |
 |---|---|
 | Database | SQLite became **PostgreSQL** (Supabase). Versioned migrations run automatically on start. |
-| Sign-in | **Google only, verified Gmail only.** No passwords exist anywhere. |
+| Sign-in | **Gmail + password (e-mail verified) or Google**, Gmail addresses only. Passwords are stored only as scrypt hashes. |
 | Classes | A student can be in **many classes** (`student_class_memberships`). A teacher can create many classes. |
 | Homework fix | Teachers can now **create homework** (text, due date, PDF/JPG/PNG/DOCX file) for one or several classes. |
 | Planner | Weekly timetable, exam countdowns, "what to study today". |
@@ -21,11 +39,13 @@ Everything in your V4 list is in this version. See [docs/V4-CHANGES.md](docs/V4-
 | Security | CSRF, CSP and security headers, CORS allow-list, rate limits, upload inspection, private files. |
 | Backups | Daily + weekly backups, **automatic restore test**, recovery runbook. |
 
-### About "forgot / reset / change password"
-Your list asked for password reset features and also for Google-only login. With Google-only sign-in there is **no password to forget, reset or change**, so those features would be dead code and extra attack surface. The equivalents are built instead:
-* **Reset / recovery** is Google's own account recovery.
-* **Change email with re-verification**: Security > Account > *Change linked Gmail*. You confirm your current Google account, then prove ownership of the new Gmail with a fresh Google sign-in. All other devices are logged out.
-* **Logout from all devices** and **session management**: Security > Active sessions.
+### Two ways to get in
+* **Log in** page: Gmail + password, or *Continue with Google*. If the account exists and the password matches you go straight to the home page; nothing else is asked. A wrong password, an unknown Gmail and a Google-only account all get the same answer ("Incorrect Gmail or password"), so nobody can use the form to find out who has an account.
+* **Sign up** page: choose Student or Teacher, then either *Sign up with Google* or Gmail + password. Password sign-ups must verify the Gmail through an e-mailed link ([docs/EMAIL-SETUP.md](docs/EMAIL-SETUP.md)). Then a details page appears **once** (name, surname, class/grade, parent or guardian for students, subjects for teachers, optional class code). Google users see their Google name pre-filled to confirm.
+* Forgot password (e-mail link), change password, change linked Gmail with re-verification, log out all devices and active sessions are all included. Only Gmail addresses can sign up.
+
+### Demo accounts for showing the app to teachers
+Set `ALLOW_DEMO=true` and redeploy: five accounts, six classes (DEMO01 to DEMO06) and weeks of realistic progress are created automatically. Details and the login list are in [docs/DEMO.md](docs/DEMO.md). Reset them any time from Admin > Demo.
 
 ## Repository layout
 
@@ -37,7 +57,7 @@ server/
   src/
     config.js      validated environment (production refuses weak settings)
     db.js          PostgreSQL pool (parameterised queries only)
-    migrate.js + migrations/001_init.sql
+    migrate.js + migrations/ (001 to 003)
     google.js      verifies Google ID tokens, verified-Gmail rule
     sessions.js    server-side sessions, device parsing, admin tokens
     security.js    headers, CSP, CORS, cookies, CSRF
@@ -45,8 +65,8 @@ server/
     backup.js      snapshot, restore, restore-test, scheduler
     routes/        every API route, one file per area
   scripts/         migrate, backup, backup:verify, restore, import:sqlite
-  test/            81 automated tests + end-to-end browser test
-docs/              RECOVERY.md, SECURITY.md, V4-CHANGES.md
+  test/            all automated tests + an end-to-end browser test (npm run e2e)
+docs/              RECOVERY.md, SECURITY.md, V6-CHANGES.md, V4-CHANGES.md
 ```
 
 ## Setup
@@ -64,12 +84,15 @@ docs/              RECOVERY.md, SECURITY.md, V4-CHANGES.md
 4. Copy the **Client ID** into `GOOGLE_CLIENT_ID`.
 
 ### 3. Render (one web service)
+* Deploy **one Web Service only** (it serves the website and the API on one address). Do not also run a separate Static Site: sign-in cookies cannot cross between two addresses. Leave *Root Directory* empty.
 * Build command: `npm run build`   Start command: `npm start`   Health check path: `/api/health`
 * Environment variables (also listed in `server/.env.example` and `render.yaml`):
 
 | Variable | Value |
 |---|---|
 | `NODE_ENV` | `production` |
+| `MAIL_PROVIDER`, `MAIL_WEBHOOK_URL`, `MAIL_WEBHOOK_TOKEN` | optional: turns on Gmail + password sign-up ([docs/EMAIL-SETUP.md](docs/EMAIL-SETUP.md)) |
+| `ALLOW_DEMO` | optional: `true` creates the demo accounts ([docs/DEMO.md](docs/DEMO.md)) |
 | `DATABASE_URL` | Supabase pooler connection string |
 | `SESSION_SECRET` | 32+ random characters (`openssl rand -hex 32`) |
 | `ADMIN_KEY` | 12+ characters; your owner key for `/admin` |

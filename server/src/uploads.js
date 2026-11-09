@@ -2,21 +2,36 @@
 import { HttpError } from "./validate.js";
 import { inspectUpload, storageKey } from "./files.js";
 import { getInstitute, instituteEnforced, storageBytesFor } from "./repo.js";
+import { MAX_FILES_PER_REQUEST } from "./attachments.js";
 
 export function requireStorage(ctx) {
   if (!ctx.storage) throw new HttpError(503, "File storage is not configured", "STORAGE_OFF");
   return ctx.storage;
 }
 
-// Validates the uploaded bytes (never the client's claims). Throws a clear error for anything not allowed.
-export async function inspectRequestFile(ctx, req) {
-  if (!req.file) throw new HttpError(400, "A file is required");
+// The files of a request: one file (single upload) or several (multi upload). Always an array.
+export const requestFiles = req => (Array.isArray(req.files) && req.files.length ? req.files : req.file ? [req.file] : []);
+
+// Validates one uploaded file's bytes (never the client's claims). Throws a clear error for anything not allowed.
+export async function inspectRequestFile(ctx, req, file = req.file) {
+  if (!file) throw new HttpError(400, "A file is required");
   try {
-    return inspectUpload({ buffer: req.file.buffer, originalName: req.file.originalname, declaredMime: req.file.mimetype, maxBytes: ctx.config.maxUploadBytes });
+    return inspectUpload({ buffer: file.buffer, originalName: file.originalname, declaredMime: file.mimetype, maxBytes: ctx.config.maxUploadBytes });
   } catch (error) {
-    await ctx.audit(req, "upload_rejected", `${error.message} (${String(req.file.originalname || "").slice(0, 60)})`);
+    await ctx.audit(req, "upload_rejected", `${error.message} (${String(file.originalname || "").slice(0, 60)})`);
     throw error;
   }
+}
+
+// Inspects every file of a request before anything is stored, so one bad file rejects the whole request cleanly.
+export async function inspectRequestFiles(ctx, req) {
+  const files = requestFiles(req);
+  if (files.length > MAX_FILES_PER_REQUEST) throw new HttpError(400, `You can upload up to ${MAX_FILES_PER_REQUEST} files at a time.`);
+  const out = [];
+  for (const file of files) out.push({ file, info: await inspectRequestFile(ctx, req, file) });
+  const total = out.reduce((sum, x) => sum + x.info.size, 0);
+  if (total > ctx.config.maxUploadTotalBytes) throw new HttpError(413, `Together the files must be ${Math.round(ctx.config.maxUploadTotalBytes / 1024 / 1024)} MB or smaller.`, "UPLOAD_REJECTED");
+  return out;
 }
 
 export async function assertStorageQuota(ctx, user, extraBytes, replacingBytes = 0) {

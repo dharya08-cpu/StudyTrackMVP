@@ -1,6 +1,6 @@
 {
   "name": "studytrack",
-  "version": "4.0.0",
+  "version": "6.0.0",
   "private": true,
   "scripts": {
     "install:all": "npm --prefix server install && npm --prefix client install",
@@ -12,7 +12,10 @@
     "qa": "node scripts/qa-static.mjs",
     "check": "node scripts/check-syntax.mjs",
     "test": "npm --prefix server test",
-    "e2e": "node server/test/e2e/run.mjs"
+    "e2e": "node server/test/e2e/run.mjs",
+    "seed:demo": "npm --prefix server run seed:demo",
+    "qa:scale": "node scripts/qa-scale.mjs",
+    "test:scale": "npm --prefix server run test:scale"
   },
   "engines": {
     "node": ">=20"

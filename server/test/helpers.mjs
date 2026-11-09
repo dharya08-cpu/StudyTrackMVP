@@ -59,21 +59,31 @@ export function memoryStorage() {
   };
 }
 
-export async function createTestApp({ env = {}, limits = {}, withStorage = true, startTime = "2026-10-07T08:00:00.000Z" } = {}) {
+// Captures every e-mail instead of sending it, so tests can open the verification and reset links.
+export function fakeMailer({ enabled = true } = {}) {
+  const mailer = { enabled, provider: "fake", sent: [], failNext: false,
+    async send(message) { if (mailer.failNext) { mailer.failNext = false; throw new Error("mail down"); } mailer.sent.push(message); },
+    last: () => mailer.sent.at(-1),
+    token: () => /token=([A-Za-z0-9_-]{43})/.exec(mailer.last()?.text || "")?.[1] ?? null };
+  return mailer;
+}
+
+export async function createTestApp({ env = {}, limits = {}, withStorage = true, mailEnabled = true, startTime = "2026-10-07T08:00:00.000Z" } = {}) {
   let now = new Date(startTime);
   const clock = createClock("Asia/Kolkata", () => new Date(now));
-  const config = loadConfig({ NODE_ENV: "test", APP_URL: "http://localhost", SESSION_SECRET: "test-session-secret-0123456789abcdef-test", ADMIN_KEY: "owner-key-123456", GOOGLE_CLIENT_ID: CLIENT_ID, STUDYTRACK_TIMEZONE: "Asia/Kolkata", ...env });
+  const config = loadConfig({ NODE_ENV: "test", APP_URL: "http://localhost", SESSION_SECRET: "test-session-secret-0123456789abcdef-test", ADMIN_KEY: "owner-key-123456", GOOGLE_CLIENT_ID: CLIENT_ID, STUDYTRACK_TIMEZONE: "Asia/Kolkata", IP_LIMIT_FACTOR: "1", ...env }); // factor 1 = the strict per-IP limits, so the older tests can still trigger them; the scale tests use the real default (10)
   const db = await createTestDb();
   await applyMigrations(db);
   const storage = withStorage ? memoryStorage() : null;
   const google = createGoogleVerifier({ clientId: CLIENT_ID, clock, fetchJwks: async () => ({ keys: [jwk], maxAgeSeconds: 3600 }) });
-  const ctx = createContext({ db, config, clock, storage, google, limits: { api: 100000, ...limits } });
+  const mailer = fakeMailer({ enabled: mailEnabled });
+  const ctx = createContext({ db, config, clock, storage, google, mailer, limits: { api: 100000, ...limits } });
   ctx.backups = createBackupService({ db, storage, config, clock });
   const routes = buildRoutes(ctx);
   const chain = [...pageMiddleware(ctx), ...apiMiddleware(ctx)];
   const onError = errorHandler(config);
   const app = {
-    ctx, db, clock, config, storage, routes,
+    ctx, db, clock, config, storage, routes, mail: mailer,
     setTime: iso => { now = new Date(iso); },
     advance: ms => { now = new Date(now.getTime() + ms); },
     request: (req) => inject(app, chain, onError, req),
@@ -94,18 +104,19 @@ function matchRoute(routes, method, path) {
 }
 
 // Runs one request through the same middleware as production: headers, CORS, rate limit, cookies, origin guard, auth, route.
-export async function inject(app, chain, onError, { method = "GET", url, body, headers = {}, cookies = {}, file = null, ip = "203.0.113.5" }) {
+export async function inject(app, chain, onError, { method = "GET", url, body, headers = {}, cookies = {}, file = null, files = null, ip = "203.0.113.5" }) {
   const [path, qs] = url.split("?");
   const query = Object.fromEntries(new URLSearchParams(qs || ""));
   const h = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
   if (Object.keys(cookies).length) h.cookie = Object.entries(cookies).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("; ");
-  const req = { method, path, url, originalUrl: url, query, params: {}, body: body === undefined ? undefined : JSON.parse(JSON.stringify(body)), file, ip, headers: h, get: n => h[n.toLowerCase()], protocol: "http", secure: false };
+  const req = { method, path, url, originalUrl: url, query, params: {}, body: body === undefined ? undefined : JSON.parse(JSON.stringify(body)), file: file || files?.[0] || null, ...(files ? { files } : {}), ip, headers: h, get: n => h[n.toLowerCase()], protocol: "http", secure: false };
   const res = { statusCode: 200, headers: {}, setCookies: [], body: undefined, headersSent: false, finished: null };
   res.promise = new Promise(resolve => { res.finished = resolve; });
   res.status = c => { res.statusCode = c; return res; };
   res.set = (k, v) => { res.headers[k.toLowerCase()] = v; return res; };
   res.append = (k, v) => { if (k.toLowerCase() === "set-cookie") res.setCookies.push(v); else res.headers[k.toLowerCase()] = res.headers[k.toLowerCase()] ? `${res.headers[k.toLowerCase()]}, ${v}` : v; return res; };
   res.removeHeader = k => { delete res.headers[k.toLowerCase()]; };
+  res.send = data => { res.body = data; res.headersSent = true; res.finished(); return res; };
   res.json = o => { res.body = o; res.headersSent = true; res.finished(); return res; };
   res.end = () => { res.headersSent = true; res.finished(); return res; };
   const found = matchRoute(app.routes, method, path);
@@ -119,7 +130,9 @@ export async function inject(app, chain, onError, { method = "GET", url, body, h
     try { await step(req, res, next); } catch (e) { await next(e); }
   };
   await next();
-  await Promise.race([res.promise, new Promise(r => setTimeout(r, 50))]);
+  // Middleware may call next() without returning it, so completion is the response itself (15 s safety net).
+  let timer; const timedOut = await Promise.race([res.promise.then(() => false), new Promise(r => { timer = setTimeout(() => r(true), 15000); })]); clearTimeout(timer);
+  if (timedOut) return { status: 599, body: { error: "test harness: the handler never responded" }, headers: res.headers, setCookies: res.setCookies, error: failed };
   return { status: res.statusCode, body: res.body, headers: res.headers, setCookies: res.setCookies, error: failed };
 }
 
@@ -128,7 +141,7 @@ export class Browser {
   constructor(app, { ip = "203.0.113.5", ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36" } = {}) { this.app = app; this.cookies = {}; this.csrf = null; this.ip = ip; this.ua = ua; }
   async call(method, url, body, extra = {}) {
     const headers = { origin: "http://localhost", "user-agent": this.ua, ...(this.csrf ? { "x-csrf-token": this.csrf } : {}), ...(extra.headers || {}) };
-    const r = await this.app.request({ method, url, body, headers, cookies: this.cookies, ip: this.ip, file: extra.file || null });
+    const r = await this.app.request({ method, url, body, headers, cookies: this.cookies, ip: this.ip, file: extra.file || null, files: extra.files || null });
     for (const c of r.setCookies) {
       const [pair, ...attrs] = c.split("; ");
       const [name, ...rest] = pair.split("=");
@@ -142,6 +155,10 @@ export class Browser {
   put(url, body, extra) { return this.call("PUT", url, body ?? {}, extra); }
   patch(url, body, extra) { return this.call("PATCH", url, body ?? {}, extra); }
   delete(url, extra) { return this.call("DELETE", url, undefined, extra); }
+  async register({ email, password, role = "student" }) { return this.post("/api/auth/register", { email, password, role }); }
+  async login(email, password) { const r = await this.post("/api/auth/login", { email, password }); if (r.status === 200) this.csrf = r.body.csrfToken; return r; }
+  // Opens the link from the last e-mail the way the web page does.
+  async openMailLink(path = "/api/auth/verify-email") { const token = this.app.mail.token(); const r = await this.post(path, { token }); if (r.status === 200 && r.body.csrfToken) this.csrf = r.body.csrfToken; return r; }
   // Full Google sign-in: nonce cookie -> ID token bound to it -> session cookie + CSRF token.
   async signIn({ sub, email, name, role, claims = {} }) {
     const n = await this.post("/api/auth/nonce");

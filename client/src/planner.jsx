@@ -70,7 +70,7 @@ export function StudentPlanner() {
       </section>
       <section className="panel">
         <h2>Exam countdowns</h2>
-        <List items={data.exams} empty="No upcoming exams. Add one below." render={e => (
+        <List items={data.exams.map(x => ({ ...x, id: `${x.source}-${x.id}` }))} empty="No upcoming exams. Add one below." render={e => (
           <div className="item"><div><b>{e.title}</b><small>{e.subject} • {e.exam_date} {e.source === "test" ? "• class test" : ""}</small></div>
             <div className="status-group"><span className={`countdown ${e.days_left <= 3 ? "soon" : ""}`}>{e.days_left === 0 ? "Today" : e.days_left === 1 ? "Tomorrow" : `${e.days_left} days`}</span>{e.source === "personal" && <button className="danger-outline small-btn" onClick={() => run(() => api(`/student/exams/${e.id}`, { method: "DELETE" }))}>Remove</button>}</div></div>
         )} />

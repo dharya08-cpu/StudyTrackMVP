@@ -63,21 +63,3 @@ export function timeAgo(value, now = Date.now()) {
 }
 // █████░░░ style bar for goals (decorative; the numbers beside it carry the meaning)
 export function BlockBar({ percent, width = 16 }) { const filled = Math.round(Math.min(100, Math.max(0, percent)) / 100 * width); return <span className="block-bar" aria-hidden="true">{"█".repeat(filled)}{"░".repeat(width - filled)}</span>; }
-
-const FILE_ACCEPT = ".pdf,.jpg,.jpeg,.png,.docx";
-export const FILE_HINT = "PDF, JPG, PNG or DOCX, up to 15 MB";
-export function FileUploadButton({ onChange, disabled = false, label = "Attach file" }) {
-  return <label className="secondary file-button" onClick={e => e.stopPropagation()}>{disabled ? "Uploading…" : label}<input type="file" hidden accept={FILE_ACCEPT} disabled={disabled} onClick={e => e.stopPropagation()} onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) onChange(file); }} /></label>;
-}
-export function DownloadFileButton({ type, id }) {
-  const [loading, setLoading] = useState(false), [error, setError] = useState("");
-  const download = async e => {
-    e.stopPropagation(); setLoading(true); setError("");
-    try {
-      const result = await api(`/files/${type}/${id}`);
-      const link = document.createElement("a"); link.href = result.url; link.target = "_blank"; link.rel = "noopener noreferrer";
-      document.body.appendChild(link); link.click(); link.remove();
-    } catch (err) { setError(err.message); } finally { setLoading(false); }
-  };
-  return <span className="file-download"><button className="secondary small-btn" onClick={download} disabled={loading}>{loading ? "Opening…" : "Download file"}</button>{error && <small className="error-text">{error}</small>}</span>;
-}

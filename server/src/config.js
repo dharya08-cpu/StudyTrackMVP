@@ -42,10 +42,22 @@ export function loadConfig(env = process.env) {
       backupBucket: get("SUPABASE_BACKUP_BUCKET", "studytrack-backups"),
     },
     maxUploadBytes: int("MAX_UPLOAD_MB", 15, 1, 50) * 1024 * 1024,
+    maxUploadTotalBytes: int("MAX_UPLOAD_TOTAL_MB", 40, 1, 150) * 1024 * 1024,
+    maxUploadInflightBytes: int("UPLOAD_INFLIGHT_MB", 100, 10, 2000) * 1024 * 1024, // all uploads being received at the same moment, together
     sessionAbsoluteDays: int("SESSION_MAX_DAYS", 30, 1, 90),
     sessionIdleDays: int("SESSION_IDLE_DAYS", 14, 1, 60),
     maxSessionsPerUser: int("MAX_SESSIONS_PER_USER", 10, 1, 50),
     teacherSignupLimit: int("TEACHER_SIGNUP_LIMIT", 20, 1, 100000),
+    // A whole class or coaching centre shares ONE public IP address (the wifi router). Limits that are counted per IP are
+    // multiplied by this, so a hundred students can sign in and work at the same time. Limits per account and per
+    // person (wrong-password lock-outs, uploads, joining, etc.) are never multiplied.
+    ipLimitFactor: int("IP_LIMIT_FACTOR", 10, 1, 100),
+    allowDemo: get("ALLOW_DEMO", "false") === "true",
+    mail: {
+      provider: get("MAIL_PROVIDER", isProd ? "none" : "console"),
+      webhookUrl: get("MAIL_WEBHOOK_URL"), webhookToken: get("MAIL_WEBHOOK_TOKEN"),
+      resendKey: get("RESEND_API_KEY"), from: get("MAIL_FROM"),
+    },
     backup: {
       enabled: get("BACKUP_ENABLED", isProd ? "true" : "false") === "true",
       dailyKeep: int("BACKUP_DAILY_KEEP", 14, 1, 365),
@@ -54,6 +66,10 @@ export function loadConfig(env = process.env) {
     },
   };
   if (cfg.databaseSsl && !["disable", "require", "verify"].includes(cfg.databaseSsl)) problems.push("DATABASE_SSL must be disable, require or verify");
+  if (!["none", "console", "webhook", "resend"].includes(cfg.mail.provider)) problems.push("MAIL_PROVIDER must be none, webhook or resend");
+  if (cfg.mail.provider === "webhook" && (!/^https:\/\//.test(cfg.mail.webhookUrl) || cfg.mail.webhookToken.length < 12)) problems.push("MAIL_PROVIDER=webhook needs MAIL_WEBHOOK_URL (https) and MAIL_WEBHOOK_TOKEN (12+ characters)");
+  if (cfg.mail.provider === "resend" && (!cfg.mail.resendKey || !cfg.mail.from)) problems.push("MAIL_PROVIDER=resend needs RESEND_API_KEY and MAIL_FROM");
+  if (isProd && cfg.mail.provider === "console") problems.push("MAIL_PROVIDER=console is for development only");
   if (isProd) {
     if (!cfg.databaseUrl) problems.push("DATABASE_URL is required (Supabase Postgres connection string)");
     if (sessionSecret.length < 32) problems.push("SESSION_SECRET must be at least 32 random characters");

@@ -57,7 +57,7 @@ function AdminPanel({ signOut }) {
   const [openId, setOpenId] = useState(null);
   const [version, setVersion] = useState(0);
   const refreshAll = () => setVersion(v => v + 1);
-  const tabs = ["overview", "institutes", "classes", "teachers", "backups", "security", "activity"];
+  const tabs = ["overview", "institutes", "classes", "teachers", "demo", "backups", "security", "activity"];
   return (
     <div className="app">
       <header>
@@ -70,6 +70,7 @@ function AdminPanel({ signOut }) {
         {tab === "institutes" && <Institutes key={version} signOut={signOut} openInstitute={setOpenId} />}
         {tab === "classes" && <Classes key={version} signOut={signOut} />}
         {tab === "teachers" && <Teachers key={version} signOut={signOut} />}
+        {tab === "demo" && <Demo key={version} signOut={signOut} />}
         {tab === "backups" && <Backups key={version} signOut={signOut} />}
         {tab === "security" && <SecurityEvents key={version} signOut={signOut} />}
         {tab === "activity" && <Activity key={version} signOut={signOut} />}
@@ -421,5 +422,33 @@ function SecurityEvents({ signOut }) {
           <tbody>{data.events.map(e => <tr key={e.id} className="static-row"><td>{formatDate(e.created_at)}</td><td><span className={`badge ${/failed|rejected/.test(e.type) ? "late" : ""}`}>{e.type}</span></td><td>{e.user_id ?? "—"}</td><td>{e.ip_masked}</td><td className="wrap">{e.detail}</td></tr>)}</tbody></table></div>
       )}
     </section>
+  );
+}
+
+
+function Demo({ signOut }) {
+  const { data, error, load } = useAdminData("/admin/demo", signOut);
+  const [busy, setBusy] = useState(false), [message, setMessage] = useState(""), [actionError, setActionError] = useState("");
+  if (!data) return error ? <ErrorBox error={error} /> : <Loading />;
+  const reset = async () => {
+    setBusy(true); setMessage(""); setActionError("");
+    try { const r = await adminApi("/admin/demo/reset", { method: "POST", body: "{}" }); setMessage(`Demo data ready: ${r.users} accounts, ${r.classes} classes, ${r.study_logs} study logs, ${r.files ?? r.worksheets} files.`); await load(); }
+    catch (e) { if (e.status === 401) signOut("Your admin session ended. Sign in again."); else setActionError(e.message); }
+    finally { setBusy(false); }
+  };
+  return (
+    <>
+      <section className="panel">
+        <div className="panel-head"><div><h2>Demo accounts</h2><p className="muted">Five ready-made accounts with live data in every feature, to show StudyTrack to real teachers. Demo and real accounts never mix.</p></div>
+          <button className="primary" disabled={busy || !data.enabled} onClick={reset}>{busy ? "Working…" : data.exists ? "Reset demo data" : "Create demo data"}</button></div>
+        {!data.enabled && <p className="warning-text">Demo mode is OFF. Add the environment variable <b>ALLOW_DEMO=true</b> on the server and redeploy.</p>}
+        {message && <p className="success" role="status">{message}</p>}<ErrorBox error={actionError} />
+        <div className="table-wrap"><table><thead><tr><th>Login (Gmail)</th><th>Password</th><th>Role</th><th>Shows</th></tr></thead>
+          <tbody>{data.accounts.map(a => <tr key={a.email} className="static-row"><td>{a.email}</td><td><code>{a.password}</code></td><td>{a.role}</td><td className="wrap">{a.name}: {a.note}</td></tr>)}</tbody></table></div>
+        {data.parent_links?.length > 0 && <div className="panel inner"><h3>Parent view links</h3><p className="muted">Open one in a private window to show a parent's view. It needs no sign-in.</p>
+          <div className="list">{data.parent_links.map(l => <div className="item" key={l.student}><div><b>{l.student}</b><small>Read-only weekly summary</small></div><a className="secondary share-wa" href={l.path} target="_blank" rel="noopener noreferrer">Open parent view</a></div>)}</div></div>}
+        <p className="hint">Class codes: {data.classes.map(c => `${c.code} (${c.name})`).join(", ")}. Institute code: {data.institute}. Status: {data.exists ? `${data.exists} demo accounts exist` : "not created yet"}. These passwords are public by design: anyone who knows them can see the demo, so never put real data in demo accounts. Reset restores everything.</p>
+      </section>
+    </>
   );
 }
